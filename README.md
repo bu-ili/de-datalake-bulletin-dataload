@@ -1,6 +1,6 @@
-<h1 align="center">Bulletin Data </h1>
+<h1 align="center">Bulletin Data DAG</h1>
 
-<h2 align="center"><strong>A</strong></h2>
+<h2 align="center"><strong>An asynchronous DAG for loading BU Bulletin data</strong></h2>
 
 <div align="center">
 
@@ -38,7 +38,7 @@ Development tools are defined in `[dependency-groups]`:
 
 To install all dependencies including development tools, run:
 ```bash
-uv sync
+uv sync --frozen
 ```
 
 ## 🌱 Environment Variables
