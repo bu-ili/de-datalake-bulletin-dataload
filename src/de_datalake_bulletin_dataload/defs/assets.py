@@ -9,7 +9,9 @@ import duckdb
 from datetime import datetime
 import time
 import os
-from de_datalake_bulletin_dataload.defs.resources import DuckDBResource, HTTPClientResource, ParquetExportResource
+import sqlalchemy
+import polars as pl
+from de_datalake_bulletin_dataload.defs.resources import DuckDBResource, HTTPClientResource, ParquetExportResource, PostgresResource
 
 class GuidObject(BaseModel):
     rendered: StrictStr
@@ -76,7 +78,23 @@ class SchemaViolationError(Exception):
 
 
 async def fetch_page(session: httpx.AsyncClient, page_number: int,  total_pages: int,  base_url: str, headers: dict, context: AssetExecutionContext) -> list:
-    """Fetch a single page of data from the API asynchronously."""
+    """
+    Fetch a single page of data from the API asynchronously. This task is called in fetch_all_pages function to fetch data concurrently.
+    
+    Arguments:
+        session: httpx AsyncClient session
+        page_number: Page number to fetch
+        total_pages: Total number of pages to fetch
+        base_url: Base URL of the API
+        headers: Headers to include in the request, optional
+        context: Dagster AssetExecutionContext for logging purposes
+
+    Returns
+        list: API response data for the requested page
+
+    Raises:
+        Exception: If any error occurs during the HTTP request
+    """
     try:
         context.log.info(f"Fetching page {page_number} of {total_pages}")
         response = await session.get(url=f"{base_url}{page_number}", headers=headers)
@@ -88,19 +106,31 @@ async def fetch_page(session: httpx.AsyncClient, page_number: int,  total_pages:
         return []
 
 
-async def fetch_all_pages(base_url: str, headers: dict, context: AssetExecutionContext) -> list:
-    """Fetch all pages concurrently from the API."""
+async def fetch_all_pages(http_client: HTTPClientResource, context: AssetExecutionContext) -> list:
+    """
+    Fetch all pages concurrently from the API.
+    
+    Arguments:
+        http_client: HTTPClientResource containing base URL and headers configuration
+        context: Dagster AssetExecutionContext for logging purposes
+    
+    Returns:
+        list: API response data fetched from the Wordpress Pages API for all available pages
+    
+    Raises:
+        Exception: If any error occurs during the HTTP request
+    """
     limits = httpx.Limits(max_connections=30)
     timeout = httpx.Timeout(30.0)
     async with httpx.AsyncClient(limits=limits, timeout=timeout) as session:
-        response = await session.get(url=base_url+"1", headers=headers)
+        response = await session.get(url=http_client.base_url+"1", headers=http_client.get_headers())
         total_pages = int(response.headers.get("X-WP-TotalPages", 1))
         first_page_data = response.json()
         
         context.log.info(f"Total pages to fetch: {total_pages}")
         
         tasks = [
-            fetch_page(session, page_num, total_pages, base_url, headers, context) 
+            fetch_page(session, page_num, total_pages, http_client.base_url, http_client.get_headers(), context) 
             for page_num in range(1, total_pages + 1)
         ]
         
@@ -114,11 +144,17 @@ async def fetch_all_pages(base_url: str, headers: dict, context: AssetExecutionC
 
 def validate_single_response(data: dict, context: AssetExecutionContext) -> ExpectedJSONSchema:
     """
-    Validate a single WordPress API response against the expected schema.
+    Validate a single WordPress API response against the expected schema defined in ExpectedJSONSchema Pydantic class.
     
-    :param data: Dictionary containing WordPress page data
-    :return: Validated ExpectedJSONSchema instance
-    :raises SchemaViolationError: If validation fails
+    Arguments:
+        data: Dictionary containing WordPress page data
+        context: Dagster AssetExecutionContext for logging purposes
+
+    Returns:
+        ExpectedJSONSchema: Validated Pydantic model instance
+
+    Raises:
+        SchemaViolationError: Custom exception containing details of schema violations to provide troubleshooting information in Dagster UI
     """
     violations = []
     response_id = str(data.get('id', '<missing_id>'))
@@ -137,88 +173,157 @@ def validate_single_response(data: dict, context: AssetExecutionContext) -> Expe
 
 def validate_batch_responses(data: List[dict], context: AssetExecutionContext) -> List[ExpectedJSONSchema]:
     """
-    Validate multiple WordPress API responses.
+    Validate schema of all fetched WordPress API responses.
     
-    :param data_list: List of dictionaries containing WordPress page data
-    :return: List of validated ExpectedJSONSchema instances
+    Arguments:
+        data: List of dictionaries containing WordPress pages data
+        context: Dagster AssetExecutionContext for logging purposes
+    
+    Returns:
+        List[ExpectedJSONSchema]: List of validated Pydantic model instances
+    
+    Raises:
+        SchemaViolationError: Custom exception containing details of schema violations to provide troubleshooting information in Dagster UI
     """
     validated_records = []
     for item in data:
         validated_records.append(validate_single_response(item, context))
     return validated_records
 
-def insert_data_to_duckdb(data: list, duckdb_database: str, context: AssetExecutionContext) -> int:
-    """Insert fetched data into DuckDB table using batch operations."""
-    duckdb_conn = duckdb.connect(database=duckdb_database, read_only=False)
-    context.log.info("Established connection with DuckDB. Checking if table exists and preparing to insert data...")
-
-    duckdb_conn.execute("""CREATE TABLE IF NOT EXISTS de_datalake_bulletin_data (
-        id INTEGER,
-        modified TIMESTAMP,
-        payload JSON
-    );""")
-
-    latest_date = duckdb_conn.execute("SELECT MAX(modified) FROM de_datalake_bulletin_data").fetchone()[0]
-    if latest_date is None:
-        latest_date = datetime.min
-        context.log.info(f"No existing data found in DuckDB. Setting latest_date to {latest_date}.")
-    else:
-        context.log.info(f"Latest date in DuckDB: {latest_date}")
+def insert_data_to_postgres(data: list, postgres_connection: PostgresResource, context: AssetExecutionContext) -> int:
+    """
+    Insert fetched data into PostgreSQL table using batch operations. Leveraging existing data to create idempotent inserts based on 'modified' timestamp.
     
-    data_to_insert = [item for item in data if datetime.fromisoformat(item.get("modified")) > latest_date]
+    Arguments:
+        data: List of dictionaries containing validated WordPress pages data
+        postgres_connection: PostgresResource for managing PostgreSQL connections
+        context: Dagster AssetExecutionContext for logging purposes
 
-    batch_data = []
-    for item in data_to_insert:
-        payload = json.dumps(item)
-        id = item.get("id")
-        modified = item.get("modified")
-        batch_data.append((id, modified, payload))
-
-    duckdb_conn.executemany(
-        "INSERT INTO de_datalake_bulletin_data (id, modified, payload) VALUES (?, ?, ?)",
-        batch_data
-    )
-    context.log.info(f"Inserted {len(batch_data)} records into DuckDB successfully.")
+    Returns:
+        int: Number of records inserted into PostgreSQL
     
-    duckdb_conn.close()
-    return len(batch_data)
+    Raises:
+        Exception: If any error occurs during database operations
+    """
+    with postgres_connection.get_connection() as conn:
+        context.log.info("Established connection with PostgreSQL. Checking if table exists and preparing to insert data...")
+        
+        # Check if the table exists, create if not
+        table_check_query = sqlalchemy.text("""
+            SELECT table_name FROM information_schema.tables 
+            WHERE table_schema = 'de_datalake' AND table_name = 'pages_data';
+        """)
+        table_exists = conn.execute(table_check_query).scalar()
+        
+        if not table_exists:
+            context.log.info("Table 'de_datalake.pages_data' does not exist. Creating table...")
+            create_table_query = sqlalchemy.text("""
+                CREATE TABLE de_datalake.pages_data (
+                    dl_id INTEGER GENERATED BY DEFAULT AS IDENTITY,
+                    id INTEGER,
+                    modified TIMESTAMP,
+                    payload JSONB
+                );
+            """)
+            conn.execute(create_table_query)
+            conn.commit()
+            context.log.info("Table 'de_datalake.pages_data' created successfully.")
+        
+        # Get the latest modified date from existing data
+        latest_date_query = sqlalchemy.text("SELECT MAX(modified) as latest_change_date FROM de_datalake.pages_data;")
+        result = conn.execute(latest_date_query)
+        latest_date = result.scalar()
+        if latest_date is None:
+            latest_date = datetime.min
+            context.log.info(f"No existing data found in PostgreSQL. Setting latest_date to {latest_date}.")
+        else:
+            context.log.info(f"Latest date in PostgreSQL: {latest_date}")
+        
+        data_to_insert = [item for item in data if datetime.fromisoformat(item.get("modified")) > latest_date]
 
-def export_data_to_parquet(parquet_file_path: str, duckdb_database: str, context: AssetExecutionContext) -> str:
-    """Export data from DuckDB to Parquet file."""
-    duckdb_conn = duckdb.connect(database=duckdb_database, read_only=False)
+        batch_data = [
+            {
+                "id": item.get("id"),
+                "modified": item.get("modified"),
+                "payload": json.dumps(item)
+            }
+            for item in data_to_insert
+        ]
 
-    if not os.path.exists(parquet_file_path):
-        context.log.warning(f"Parquet file at {parquet_file_path} does not exist. Exporting all data.")
-        latest_modified_date = datetime.min
+        if batch_data:
+            insert_query = sqlalchemy.text("""
+                INSERT INTO de_datalake.pages_data (id, modified, payload) 
+                VALUES (:id, :modified, :payload);
+            """)
+            conn.execute(insert_query, batch_data)
+            conn.commit()
+            context.log.info(f"Inserted {len(batch_data)} records into PostgreSQL successfully.")
+        else:
+            context.log.info("No new records to insert.")
+        
+        return len(batch_data)
 
-    else:
-        context.log.info(f"Parquet file at {parquet_file_path} exists. Exporting only new/updated data.")
-        latest_modified = duckdb.sql(f"""SELECT CAST(MAX(modified) AS TIMESTAMP) AS latest_modified_date FROM read_parquet('{parquet_file_path}')""").df().iloc[0,0]
-        latest_modified_str = str(latest_modified)
-        latest_modified_date = datetime.fromisoformat(latest_modified_str)
-        context.log.info(f"Latest date of data available in Parquet: {latest_modified_date}")
+def export_data_to_parquet_postgres(parquet_file_path: str, postgres_connection: PostgresResource, context: AssetExecutionContext) -> str:
+    """
+    Export data from PostgreSQL to Parquet file using Polars. Leveraging existing data to create incremental exports based on 'modified' timestamp.
+
+    Arguments:
+        parquet_file_path: File path to export the Parquet file
+        postgres_connection: PostgresResource for managing PostgreSQL connections
+        context: Dagster AssetExecutionContext for logging purposes
     
-    duckdb_conn.execute(f"""COPY
-                 (SELECT id, modified, payload from de_datalake_bulletin_data where modified > '{latest_modified_date}') 
-                 TO '{parquet_file_path}' 
-                 (FORMAT PARQUET)""")
+    Returns:
+        str: Path to the exported Parquet file
     
-    duckdb_conn.close()
-    context.log.info(f"Data exported to Parquet at {parquet_file_path}.")
-    return parquet_file_path
+    Raises:
+        Exception: If any error occurs during database operations or file writing
+    """
+    with postgres_connection.get_connection() as conn:
+        if not os.path.exists(parquet_file_path):
+            context.log.warning(f"Parquet file at {parquet_file_path} does not exist. Exporting all data.")
+            latest_modified_date = datetime.min
+        else:
+            context.log.info(f"Parquet file at {parquet_file_path} exists. Exporting only new/updated data.")
+            
+            existing_df = pl.read_parquet(parquet_file_path)
+            if len(existing_df) > 0:
+                latest_modified_date = existing_df['modified'].max()
+                context.log.info(f"Latest date of data available in Parquet: {latest_modified_date}")
+            else:
+                latest_modified_date = datetime.min
+
+        query = sqlalchemy.text("""SELECT 
+                        id
+                        , modified
+                        , payload 
+                    FROM de_datalake.pages_data
+                    WHERE modified > :latest_modified_date""")
+        
+        df = pl.read_database(query, connection=conn, execute_options={"parameters": {"latest_modified_date": latest_modified_date}})
+        
+        if len(df) > 0:
+            if os.path.exists(parquet_file_path):
+                existing_df = pl.read_parquet(parquet_file_path)
+                df = pl.concat([existing_df, df])
+            
+            df.write_parquet(parquet_file_path, compression="snappy")
+            context.log.info(f"Data exported to Parquet at {parquet_file_path}. Total rows: {len(df)}")
+        else:
+            context.log.info("No new data to export.")
+        
+        return parquet_file_path
 
 
 @asset(
     group_name="de_datalake_bulletin_dataload",
-    description="Raw BU Bulletin data fetched from WordPress Pages API."
+    description="Fetch data from the BU Bulleting Worpress API asynchronously."
 )
 async def fetch_bulletin_data(context: AssetExecutionContext, http_client: HTTPClientResource) -> list:
-    """Fetch all bulletin data from the API asynchronously."""
+    """Fetch data from the BU Bulleting Worpress API asynchronously."""
     start_time = time.perf_counter()
     context.log.info("Starting bulletin data fetch from API")
     
-    headers = http_client.get_headers()
-    data = await fetch_all_pages(http_client.base_url, headers, context)
+    data = await fetch_all_pages(http_client, context)
     
     elapsed_time = time.perf_counter() - start_time
     context.log.info(f"Fetched {len(data)} records in {elapsed_time:.2f} seconds")
@@ -227,10 +332,10 @@ async def fetch_bulletin_data(context: AssetExecutionContext, http_client: HTTPC
 
 @asset(
     group_name="de_datalake_bulletin_dataload",
-    description="Validating raw BU Bulletin data against expected JSON schema"
+    description="Validate fetched BU bulletin data against the expected schema."
 )
 def validate_bulletin_data(context: AssetExecutionContext, fetch_bulletin_data: list) -> list:
-    """Validate raw bulletin data against the expected schema."""
+    """Validate fetched BU bulletin data against the expected schema."""
     start_time = time.perf_counter()
     context.log.info("Starting data validation")
     
@@ -246,33 +351,127 @@ def validate_bulletin_data(context: AssetExecutionContext, fetch_bulletin_data: 
 
 @asset(
     group_name="de_datalake_bulletin_dataload",
-    description="Bulletin data stored in DuckDB table"
+    description="Insert validated bulletin data into PostgreSQL table."
 )
-def insert_bulletin_data_to_duckdb(context: AssetExecutionContext,  duckdb_connection: DuckDBResource, validate_bulletin_data: list) -> int:
-    """Insert raw bulletin data into DuckDB table."""
+def insert_bulletin_data_to_postgres(context: AssetExecutionContext,  postgres_connection: PostgresResource, validate_bulletin_data: list) -> int:
+    """Insert validated bulletin data into PostgreSQL table."""
     start_time = time.perf_counter()
-    context.log.info("Starting DuckDB insertion")
+    context.log.info("Starting PostgreSQL insertion")
     
-    records_inserted = insert_data_to_duckdb(validate_bulletin_data, duckdb_connection.database, context)
+    records_inserted = insert_data_to_postgres(validate_bulletin_data, postgres_connection, context)
     
     elapsed_time = time.perf_counter() - start_time
-    context.log.info(f"Inserted {records_inserted} records into DuckDB in {elapsed_time:.2f} seconds")
+    context.log.info(f"Inserted {records_inserted} records into PostgreSQL in {elapsed_time:.2f} seconds")
     
     return records_inserted
 
 @asset(
     group_name="de_datalake_bulletin_dataload",
-    description="Bulletin data exported to Parquet file"
+    description="Export bulletin data from PostgreSQL to a Parquet file."
 )
-def export_bulletin_data_to_parquet(context: AssetExecutionContext, parquet_export_path: ParquetExportResource, duckdb_connection: DuckDBResource, insert_bulletin_data_to_duckdb: int) -> str:
-    """Export bulletin data from DuckDB to Parquet file."""
+def export_bulletin_data_to_parquet_postgres(context: AssetExecutionContext, parquet_export_path: ParquetExportResource, postgres_connection: PostgresResource, insert_bulletin_data_to_postgres: int) -> str:
+    """Export bulletin data from PostgreSQL to a Parquet file."""
     start_time = time.perf_counter()
     context.log.info("Starting Parquet export")
     
-    parquet_path = export_data_to_parquet(parquet_export_path.get_export_path(), duckdb_connection.database, context)
+    parquet_path = export_data_to_parquet_postgres(parquet_export_path.get_export_path(), postgres_connection, context)
     
     elapsed_time = time.perf_counter() - start_time
     context.log.info(f"Exported data to Parquet in {elapsed_time:.2f} seconds")
     context.log.info(f"Parquet file location: {parquet_path}")
     
     return parquet_path
+
+
+# def insert_data_to_duckdb(data: list, duckdb_database: str, context: AssetExecutionContext) -> int:
+#     """Insert fetched data into DuckDB table using batch operations."""
+#     duckdb_conn = duckdb.connect(database=duckdb_database, read_only=False)
+#     context.log.info("Established connection with DuckDB. Checking if table exists and preparing to insert data...")
+
+#     duckdb_conn.execute("""CREATE TABLE IF NOT EXISTS de_datalake_bulletin_data (
+#         id INTEGER,
+#         modified TIMESTAMP,
+#         payload JSON
+#     );""")
+
+#     latest_date = duckdb_conn.execute("SELECT MAX(modified) FROM de_datalake_bulletin_data").fetchone()[0]
+#     if latest_date is None:
+#         latest_date = datetime.min
+#         context.log.info(f"No existing data found in DuckDB. Setting latest_date to {latest_date}.")
+#     else:
+#         context.log.info(f"Latest date in DuckDB: {latest_date}")
+    
+#     data_to_insert = [item for item in data if datetime.fromisoformat(item.get("modified")) > latest_date]
+
+#     batch_data = []
+#     for item in data_to_insert:
+#         payload = json.dumps(item)
+#         id = item.get("id")
+#         modified = item.get("modified")
+#         batch_data.append((id, modified, payload))
+
+#     duckdb_conn.executemany(
+#         "INSERT INTO de_datalake_bulletin_data (id, modified, payload) VALUES (?, ?, ?)",
+#         batch_data
+#     )
+#     context.log.info(f"Inserted {len(batch_data)} records into DuckDB successfully.")
+    
+#     duckdb_conn.close()
+#     return len(batch_data)
+
+# def export_data_to_parquet_duckdb(parquet_file_path: str, duckdb_database: str, context: AssetExecutionContext) -> str:
+#     """Export data from DuckDB to Parquet file."""
+#     duckdb_conn = duckdb.connect(database=duckdb_database, read_only=False)
+
+#     if not os.path.exists(parquet_file_path):
+#         context.log.warning(f"Parquet file at {parquet_file_path} does not exist. Exporting all data.")
+#         latest_modified_date = datetime.min
+
+#     else:
+#         context.log.info(f"Parquet file at {parquet_file_path} exists. Exporting only new/updated data.")
+#         latest_modified = duckdb.sql(f"""SELECT CAST(MAX(modified) AS TIMESTAMP) AS latest_modified_date FROM read_parquet('{parquet_file_path}')""").df().iloc[0,0]
+#         latest_modified_str = str(latest_modified)
+#         latest_modified_date = datetime.fromisoformat(latest_modified_str)
+#         context.log.info(f"Latest date of data available in Parquet: {latest_modified_date}")
+    
+#     duckdb_conn.execute(f"""COPY
+#                  (SELECT id, modified, payload from de_datalake_bulletin_data where modified > '{latest_modified_date}') 
+#                  TO '{parquet_file_path}' 
+#                  (FORMAT PARQUET)""")
+    
+#     duckdb_conn.close()
+#     context.log.info(f"Data exported to Parquet at {parquet_file_path}.")
+#     return parquet_file_path
+#     elapsed_time = time.perf_counter() - start_time
+#     context.log.info(f"Inserted {records_inserted} records into DuckDB in {elapsed_time:.2f} seconds")
+    
+#     return records_inserted
+
+# @asset(
+#     group_name="de_datalake_bulletin_dataload",
+#     description="Bulletin data exported to Parquet file"
+# )
+# def export_bulletin_data_to_parquet(context: AssetExecutionContext, parquet_export_path: ParquetExportResource, duckdb_connection: DuckDBResource, insert_bulletin_data_to_duckdb: int) -> str:
+#     """Export bulletin data from DuckDB to Parquet file."""
+#     start_time = time.perf_counter()
+#     context.log.info("Starting Parquet export")
+    
+#     parquet_path = export_data_to_parquet(parquet_export_path.get_export_path(), duckdb_connection.database, context)
+    
+#     elapsed_time = time.perf_counter() - start_time
+#     context.log.info(f"Exported data to Parquet in {elapsed_time:.2f} seconds")
+#     context.log.info(f"Parquet file location: {parquet_path}")
+    
+
+# @asset(
+#     group_name="de_datalake_bulletin_dataload",
+#     description="Bulletin data stored in DuckDB table"
+# )
+# def insert_bulletin_data_to_duckdb(context: AssetExecutionContext,  duckdb_connection: DuckDBResource, validate_bulletin_data: list) -> int:
+#     """Insert raw bulletin data into DuckDB table."""
+#     start_time = time.perf_counter()
+#     context.log.info("Starting DuckDB insertion")
+    
+#     records_inserted = insert_data_to_duckdb(validate_bulletin_data, duckdb_connection.database, context)
+    
+#     return parquet_path

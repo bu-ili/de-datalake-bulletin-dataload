@@ -23,7 +23,7 @@ The following package versions are verified for production use in the latest bui
 | Library             | Version    | Notes                                        |
 |---------------------|------------|----------------------------------------------|
 | `dagster`           | `1.12.10`  | Core orchestration framework                 |
-| `duckdb`            | `>=1.4.3`  | Embedded analytical database                 |
+| `psycopg`           | `1`         | Connection to local instance of Postgres    |
 | `httpx`             | `>=0.28.1` | Async HTTP client for API requests           |
 | `pydantic`          | `>=2.12.5` | Data validation and schema enforcement       |
 | `asyncio`           | `>=4.0.0`  | Asynchronous I/O support                     |
