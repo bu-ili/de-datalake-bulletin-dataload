@@ -1,0 +1,6 @@
+{
+    "endpoints": {
+        "pages": "pages/",
+        "media": "media/"
+    }
+}

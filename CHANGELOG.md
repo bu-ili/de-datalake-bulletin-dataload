@@ -1,6 +1,6 @@
 # Changelog
 
-## [v1.1.2] - 2026-01-20
+## [v1.1.2] - 2026-01-21
 - Changed underlying database from DuckDB to Postgres to conform to DE standard
 - Changed Parquet export function to using Polars instead of DuckDB components
 - Improved documentation to conform to DE standard

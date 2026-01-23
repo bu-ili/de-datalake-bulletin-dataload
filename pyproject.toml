@@ -4,14 +4,11 @@ requires-python = ">=3.10,<3.15"
 version = "0.1.0"
 dependencies = [
     "asyncio>=4.0.0",
+    "boto3>=1.42.33",
     "dagster==1.12.10",
-    "duckdb>=1.4.3",
     "httpx>=0.28.1",
     "polars>=1.37.1",
-    "psycopg2-binary>=2.9.11",
-    "psycopg[binary]>=3.3.2",
     "pydantic>=2.12.5",
-    "sqlalchemy>=2.0.45",
 ]
 
 [dependency-groups]
