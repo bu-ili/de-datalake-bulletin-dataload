@@ -8,13 +8,13 @@ defs = Definitions(
     sensors=[bulletin_data_sensor],
     resources={
         "get_config": ConfigResource(
-            config_path=EnvVar("FETCH_CONFIG_PATH")
+            config_path=EnvVar("CONFIG_PATH")
         ),
         "http_client": HTTPClientResource(
             user_agent=EnvVar("USER_AGENT"),
             base_url=EnvVar("BULLETIN_WP_BASE_URL"),
             get_config=ConfigResource(
-                config_path=EnvVar("FETCH_CONFIG_PATH")
+                config_path=EnvVar("CONFIG_PATH")
             )
         ),
         "parquet_export_path": ParquetExportResource(

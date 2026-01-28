@@ -14,7 +14,7 @@
 
 ## Overview
 
-This Dagster pipeline fetches data from the BU Bulletin WordPress API, validates responses, exports to Parquet format, and optionally uploads to AWS S3. It includes a sensor that automatically detects new or modified content and triggers data refreshes.
+This Dagster pipeline fetches data from the BU Bulletin WordPress API, validates responses, exports to Parquet format, and uploads to AWS S3. It includes a sensor that automatically detects new or modified content and triggers data refreshes.
 
 ### Key Features
 - **Multi-endpoint support**: Separate assets for pages and media endpoints
@@ -67,7 +67,7 @@ FETCH_CONFIG_PATH="./config/config.json"
 |----------|-------------|----------|
 | `BULLETIN_WP_BASE_URL` | WordPress REST API base URL | Yes |
 | `USER_AGENT` | User agent string for HTTP requests | Yes |
-| `FETCH_CONFIG_PATH` | Path to config.json file | Yes |
+| `CONFIG_PATH` | Path to config.json file | Yes |
 
 #### Parquet Export Configuration
 ```env
@@ -114,12 +114,12 @@ The [`config/config.json`](config/config.json) file defines WordPress API endpoi
 
 | Field | Description | Usage |
 |-------|-------------|-------|
-| `endpoints` | Dictionary of endpoint keys and their API paths | Each key creates a fetchable endpoint (e.g., "pages", "media") |
+| `endpoints` | Dictionary of endpoint keys and their API paths | Each key creates a fetchable endpoint |
 | `pagination` | URL parameters for paginated requests | Appended to endpoint URL during data fetching (page number added dynamically) |
 | `sensor_param` | Query parameters for sensor monitoring | Used to fetch only the latest modified date efficiently |
 
 **How it works:**
-1. **ConfigResource** loads this file at runtime via `FETCH_CONFIG_PATH`
+1. **ConfigResource** loads this file at runtime via `CONFIG_PATH`
 2. **HTTPClientResource** builds full URLs: `{base_url}{endpoint}{pagination}{page_num}`
    - Example: `https://example.com/wp-json/wp/v2/endpoint1?path_parameter=value`
 3. **Sensor** uses `sensor_param` to check for new content:
@@ -196,8 +196,7 @@ de-datalake-bulletin-dataload/
 ## Architecture
 
 ### Assets
-- **bulletin_pages**: Fetches WordPress pages, validates, exports to Parquet
-- **bulletin_media**: Fetches WordPress media, validates, exports to Parquet
+- **bulletin_{endpoint_name}**: Fetches WordPress data, validates, exports to Parquet
 
 ### Resources
 - **ConfigResource**: Loads configuration from JSON, provides endpoint details
@@ -208,7 +207,7 @@ de-datalake-bulletin-dataload/
 ### Data Flow
 1. Sensor monitors WordPress API for content changes (every 24 hours)
 2. When changes detected, triggers asset materialization
-3. Assets fetch data with retry logic (3 attempts, exponential backoff)
+3. Assets fetch data with retry logic
 4. Responses validated against endpoint-specific Pydantic schemas
 5. Data exported to Parquet with structure: `id`, `dl_inserted_at`, `payload`, `dl_hash`
 6. (Optional) Uploaded to S3 with path: `/bulletin_raw/{endpoint}/load_date={date}/load_time={time}/`
