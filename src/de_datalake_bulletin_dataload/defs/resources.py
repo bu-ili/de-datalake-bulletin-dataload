@@ -5,47 +5,79 @@ import os
 import datetime
 import boto3
 import time
+import json
+from typing import Optional, Dict
 
 
-
-class PostgresResource(ConfigurableResource):
-    """Resource for managing PostgreSQL database connections."""
-    host: str
-    port: int
-    user: str
-    password: str
-    database: str
-
-    @contextmanager
-    def get_connection(self):
-        conn = sqlalchemy.create_engine(
-            f"postgresql+psycopg2://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
-        ).connect()
-        try:
-            yield conn
-        finally:
-            conn.close()
+class ConfigResource(ConfigurableResource):
+    """Resource for loading fetch configuration from JSON file."""
+    config_path: str
     
+    def load_config(self) -> dict:
+        """Load configuration from JSON file."""
+        with open(self.config_path, 'r') as f:
+            return json.load(f)
+    
+    def get_endpoints(self) -> Dict[str, str]:
+        """Get endpoints dictionary from config."""
+        config = self.load_config()
+        return config.get('endpoints', {})
+    
+    def get_endpoint_keys(self) -> list:
+        """Get list of all available endpoint keys."""
+        return list(self.get_endpoints().keys())
+    
+    def get_pagination_param(self) -> str:
+        """Get pagination parameter from config."""
+        config = self.load_config()
+        return config.get('pagination', '')
+    
+    def get_sensor_param(self) -> str:
+        """Get sensor parameter from config."""
+        config = self.load_config()
+        return config.get('sensor_param', '')
+
 
 class HTTPClientResource(ConfigurableResource):
     """Resource for managing HTTP client connections."""
     user_agent: str
     base_url: str
+    get_config: ConfigResource
     
     def get_headers(self):
+        """Assign header for HTTP requests."""
         return {"User-Agent": self.user_agent}
-
-
+    
+    def get_all_endpoint_urls(self) -> Dict[str, str]:
+        """Get full URLs for all configured endpoints."""
+        endpoints = self.get_config.get_endpoints()
+        pagination_param = self.get_config.get_pagination_param()
+        return {
+            key: f"{self.base_url}{path}{pagination_param}"
+            for key, path in endpoints.items()
+        }
+    
+    def get_endpoint_keys(self) -> list:
+        """Get list of all available endpoint keys."""
+        return self.get_config.get_endpoint_keys()
+        
 class ParquetExportResource(ConfigurableResource):
     """Resource for managing Parquet export file location and settings."""
     export_folder_path: str
     parquet_file_name: str
     compression: str = "SNAPPY"
 
-    def get_export_path(self):
-        datestamp = datetime.datetime.now().strftime("%Y-%m-%d")
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        export_path = os.path.join(self.export_folder_path, f"load_date={datestamp}/load_time={timestamp}/{self.parquet_file_name}")
+    def get_export_path(self, endpoint_key: str, load_date: str, load_time: str):
+        """Generate export path with optional endpoint suffix in filename to split the final output into files specific to endpoints data was fetched."""
+        datestamp = str(load_date)
+        timestamp = str(load_time)
+        
+        if endpoint_key:
+            filename = f"{endpoint_key}_{self.parquet_file_name}"
+        else:
+            filename = self.parquet_file_name
+        
+        export_path = os.path.join(self.export_folder_path, f"{endpoint_key}/load_date={datestamp}/load_time={timestamp}/{filename}")
         return export_path
 
 class AWSS3Resource(ConfigurableResource):

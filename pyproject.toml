@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28.1",
     "polars>=1.37.1",
     "pydantic>=2.12.5",
+    "tenacity>=9.1.2",
 ]
 
 [dependency-groups]

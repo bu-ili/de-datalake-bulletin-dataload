@@ -211,3 +211,6 @@ __marimo__/
 data/
 *.duckdb
 *.parquet
+
+# Temp Dagster files
+.tmp_dagster*

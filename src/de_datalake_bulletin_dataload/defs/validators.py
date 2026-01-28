@@ -2,6 +2,7 @@ from dagster import AssetExecutionContext
 from pydantic import BaseModel, StrictStr, StrictInt, StrictBool, ValidationError, Field
 from typing import List, Any, Dict, Union
 
+
 class GuidObject(BaseModel):
     rendered: StrictStr
 
@@ -15,8 +16,21 @@ class ContentObject(BaseModel):
 class ExcerptObject(BaseModel):
     rendered: StrictStr
     protected: StrictBool
+
+class CaptionObject(BaseModel):
+    rendered: StrictStr
+
+class DescriptionObject(BaseModel):
+    rendered: StrictStr
+
+class MediaDetailsObject(BaseModel):
+    filesize: StrictInt
+    sizes: Dict[str, Any]
     
-class ExpectedJSONSchema(BaseModel):
+    # class Config:
+    #     extra = "allow"  
+    
+class ExpectedPagesSchema(BaseModel):
     """Definition of the expected JSON schema from the WordPress Pages API, with strict type enforcement."""
     id: StrictInt
     date: StrictStr
@@ -45,6 +59,44 @@ class ExpectedJSONSchema(BaseModel):
         extra = "forbid" 
         populate_by_name = True
 
+class ExpectedMediaSchema(BaseModel):
+    """Definition of the expected JSON schema from the WordPress Media API, with strict type enforcement."""
+    id: StrictInt
+    date: StrictStr
+    date_gmt: StrictStr
+    guid: GuidObject
+    modified: StrictStr
+    modified_gmt: StrictStr
+    slug: StrictStr
+    status: StrictStr
+    type: StrictStr
+    link: StrictStr
+    title: TitleObject
+    author: StrictInt
+    comment_status: StrictStr
+    ping_status: StrictStr
+    template: StrictStr
+    meta: Union[Dict[str, Any], list] = Field(default_factory=dict)
+    description: DescriptionObject
+    caption: CaptionObject
+    alt_text: StrictStr
+    media_type: StrictStr
+    mime_type: StrictStr
+    media_details: Union[MediaDetailsObject, Dict[str, Any]] = Field(default_factory=dict)
+    post: Union[StrictInt, None] = None
+    source_url: StrictStr
+    links: Dict[str, Any] = Field(alias="_links", default_factory=dict)
+
+    class Config:
+        extra = "forbid"
+        populate_by_name = True
+
+# Mapping of endpoint keys to their corresponding schema classes
+expected_endpoint_schemas = {
+    "pages": ExpectedPagesSchema,
+    "media": ExpectedMediaSchema,
+}
+
 class Violation(BaseModel):
     """Definition to store notification of schema violation."""
     kind: str
@@ -65,25 +117,32 @@ class SchemaViolationError(Exception):
             lines.append(f"- [{d.kind}] {d.field}: {d.message}")
         return "\n".join(lines)
     
-def validate_single_response(data: dict, context: AssetExecutionContext) -> ExpectedJSONSchema:
+def validate_single_response(data: dict, endpoint_key: str, context: AssetExecutionContext) -> Union[ExpectedPagesSchema, ExpectedMediaSchema]:
     """
-    Validate a single WordPress API response against the expected schema defined in ExpectedJSONSchema Pydantic class.
+    Validate a single WordPress API response against the expected schema for the given endpoint.
     
     Arguments:
-        data: Dictionary containing WordPress page data
+        data: Dictionary containing WordPress data
+        endpoint_key: The endpoint key (e.g., 'pages', 'media') to determine which schema to use
         context: Dagster AssetExecutionContext for logging purposes
 
     Returns:
-        ExpectedJSONSchema: Validated Pydantic model instance
+        Union[ExpectedPagesSchema, ExpectedMediaSchema]: Validated Pydantic model instance
 
     Raises:
-        SchemaViolationError: Custom exception containing details of schema violations to provide troubleshooting information in Dagster UI
+        SchemaViolationError: Custom exception containing details of schema violations
+        ValueError: If no schema is defined for the given endpoint
     """
     violations = []
     response_id = str(data.get('id', '<missing_id>'))
+    
+    # Get the appropriate schema class for this endpoint
+    schema_class = expected_endpoint_schemas.get(endpoint_key)
+    if not schema_class:
+        raise ValueError(f"No schema defined for endpoint: {endpoint_key}. Available endpoints: {list(expected_endpoint_schemas.keys())}")
 
     try:
-        return ExpectedJSONSchema(**data)
+        return schema_class(**data)
     except ValidationError as e:
         for error in e.errors():
             field_path = ".".join(str(loc) for loc in error['loc'])
@@ -92,25 +151,30 @@ def validate_single_response(data: dict, context: AssetExecutionContext) -> Expe
                 field=field_path,
                 message=error['msg']
             ))
-        raise SchemaViolationError(id=response_id, violation=violations, message="Schema validation failed")
+        raise SchemaViolationError(
+            id=response_id, 
+            violation=violations, 
+            message=f"Schema validation failed for endpoint '{endpoint_key}'"
+        )
 
-def validate_batch_responses(data: List[dict], context: AssetExecutionContext) -> List[ExpectedJSONSchema]:
+def validate_batch_responses(data: List[dict], endpoint_key: str, context: AssetExecutionContext) -> List[Union[ExpectedPagesSchema, ExpectedMediaSchema]]:
     """
-    Validate schema of all fetched WordPress API responses.
+    Validate schema of all fetched WordPress API responses using endpoint-specific schema.
     
     Arguments:
-        data: List of dictionaries containing WordPress pages data
+        data: List of dictionaries containing WordPress data
+        endpoint_key: The endpoint key (e.g., 'pages', 'media') to determine which schema to use
         context: Dagster AssetExecutionContext for logging purposes
     
     Returns:
-        List[ExpectedJSONSchema]: List of validated Pydantic model instances
+        List[Union[ExpectedPagesSchema, ExpectedMediaSchema]]: List of validated Pydantic model instances
     
     Raises:
-        SchemaViolationError: Custom exception containing details of schema violations to provide troubleshooting information in Dagster UI
+        SchemaViolationError: Custom exception containing details of schema violations
     """
     validated_records = []
     for item in data:
-        validated_records.append(validate_single_response(item, context))
+        validated_records.append(validate_single_response(item, endpoint_key, context))
     return validated_records
 
  

@@ -2,17 +2,21 @@ import dagster as dg
 from dagster import asset, AssetExecutionContext
 from datetime import datetime
 import os
+import json
 import polars as pl
 from de_datalake_bulletin_dataload.defs.resources import ParquetExportResource, AWSS3Resource
 
 
-def export_to_parquet(export_path: ParquetExportResource, validated_data: list, context: AssetExecutionContext) -> str:
+def export_to_parquet(export_path: ParquetExportResource, validated_data: list, endpoint_key: str, load_date: str, load_time: str, context: AssetExecutionContext) -> str:
     """
-    Export data to Parquet format using Polars.
+    Export data to Parquet format using Polars with structure: id, dl_inserted_at, payload.
 
     Arguments:
-        parquet_config: Dagster resource configuration for Parquet export
-        validated_data: List of validated data to be exported
+        export_path: Dagster resource configuration for Parquet export
+        validated_data: List of validated data dictionaries to be exported
+        endpoint_key: The endpoint key for file naming
+        load_date: Date string for partitioning (YYYY-MM-DD)
+        load_time: Time string for partitioning (HH:MM:SS)
         context: Dagster AssetExecutionContext for logging purposes
     
     Returns:
@@ -21,20 +25,36 @@ def export_to_parquet(export_path: ParquetExportResource, validated_data: list, 
     Raises:
         Exception: If any error occurs during database operations or file writing
     """
-    export_file_path = export_path.get_export_path()
-    
-    # Create parent directories if they don't exist
+    export_file_path = export_path.get_export_path(endpoint_key=endpoint_key, load_date=load_date, load_time=load_time)
+    runtime_timestamp = datetime.now()
+
     os.makedirs(os.path.dirname(export_file_path), exist_ok=True)
+    context.log.info(f"Creating an export file at {export_file_path} for endpoint {endpoint_key}.")
+        
+
+    export_data = [
+        {
+            "id": data["id"],
+            "dl_inserted_at": runtime_timestamp,
+            "payload": json.dumps(data)
+        }
+        for data in validated_data
+    ]
     
-    if not os.path.exists(export_file_path):
-        context.log.warning(f"Parquet file at {export_file_path} does not exist. Exporting all data.")
-    else:
-        context.log.info(f"Parquet file at {export_file_path} exists. Overwriting the file.")
-            
-    df = pl.DataFrame(validated_data)
-            
-    df.write_parquet(export_file_path, compression="snappy")
-    context.log.info(f"Data exported to Parquet at {export_file_path}. Total rows: {len(df)}")
+    export_df = pl.DataFrame(export_data)
+
+    #Concatenate all columns as strings, then hash
+    hash_expr = pl.concat_str([
+        pl.col(c).cast(pl.Utf8, strict=False).fill_null("NULL")
+        for c in export_df.columns
+    ], separator="|")
+
+    export_df = export_df.with_columns([
+    hash_expr.str.encode('hex').alias('dl_hash')
+    ])
+
+    export_df.write_parquet(export_file_path, compression="snappy")
+    context.log.info(f"Data exported to Parquet at {export_file_path}. Total rows: {len(export_df)}")
         
     return export_file_path
 
@@ -57,7 +77,6 @@ def export_to_s3(aws_s3_config: AWSS3Resource, file_path: str, context: AssetExe
     s3_client = aws_s3_config.get_s3_client()
     bucket_name = aws_s3_config.bucket_name
     
-    # Normalize path to use forward slashes and remove leading ./
     s3_key = file_path.replace("\\", "/").lstrip("./")
 
     try:
