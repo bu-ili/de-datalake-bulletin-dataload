@@ -224,4 +224,4 @@ docs/assets/
 # Local data folders
 data/
 k8s/
-bulletin_raw/
+bulletin_raw/.DS_Store
