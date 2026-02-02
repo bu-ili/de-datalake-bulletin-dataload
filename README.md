@@ -5,7 +5,7 @@
 <div align="center">
 
 [![Version](https://img.shields.io/badge/Version-1.2.0-black.svg?logo=semanticrelease&logoColor=white)]()
-[![Status](https://img.shields.io/badge/Status-Production-darkgreen.svg?logo=progress&logoColor=white)]()
+[![Status](https://img.shields.io/badge/Status-Testing-orange.svg?logo=progress&logoColor=white)]()
 [![Changelog](https://img.shields.io/badge/Changelog-View-blue.svg?logo=readthedocs&logoColor=white)](./CHANGELOG.md)
 
 [![Python](https://img.shields.io/badge/Python-3.13.x-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
