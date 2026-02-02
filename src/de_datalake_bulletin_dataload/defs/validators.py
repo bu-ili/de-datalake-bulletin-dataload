@@ -31,7 +31,7 @@ class MediaDetailsObject(BaseModel):
     #     extra = "allow"  
     
 class ExpectedPagesSchema(BaseModel):
-    """Definition of the expected JSON schema from the WordPress Pages API, with strict type enforcement."""
+    """Expected JSON schema from the WordPress Pages API with strict type enforcement."""
     id: StrictInt
     date: StrictStr
     date_gmt: StrictStr
@@ -60,7 +60,7 @@ class ExpectedPagesSchema(BaseModel):
         populate_by_name = True
 
 class ExpectedMediaSchema(BaseModel):
-    """Definition of the expected JSON schema from the WordPress Media API, with strict type enforcement."""
+    """Expected JSON schema from the WordPress Media API with strict type enforcement."""
     id: StrictInt
     date: StrictStr
     date_gmt: StrictStr
@@ -98,7 +98,7 @@ expected_endpoint_schemas = {
 }
 
 class Violation(BaseModel):
-    """Definition to store notification of schema violation."""
+    """Schema violation notification storage."""
     kind: str
     field: str
     message: str
@@ -118,20 +118,19 @@ class SchemaViolationError(Exception):
         return "\n".join(lines)
     
 def validate_single_response(data: dict, endpoint_key: str, context: AssetExecutionContext) -> Union[ExpectedPagesSchema, ExpectedMediaSchema]:
-    """
-    Validate a single WordPress API response against the expected schema for the given endpoint.
+    """Validate a single WordPress API response against the expected schema.
     
-    Arguments:
-        data: Dictionary containing WordPress data
-        endpoint_key: The endpoint key (e.g., 'pages', 'media') to determine which schema to use
-        context: Dagster AssetExecutionContext for logging purposes
+    Args:
+        data (dict): Dictionary containing WordPress data.
+        endpoint_key (str): The endpoint key (e.g., 'pages', 'media') to determine schema.
+        context (AssetExecutionContext): Dagster AssetExecutionContext for logging.
 
     Returns:
-        Union[ExpectedPagesSchema, ExpectedMediaSchema]: Validated Pydantic model instance
+        Union[ExpectedPagesSchema, ExpectedMediaSchema]: Validated Pydantic model instance.
 
     Raises:
-        SchemaViolationError: Custom exception containing details of schema violations
-        ValueError: If no schema is defined for the given endpoint
+        SchemaViolationError: Custom exception containing details of schema violations.
+        ValueError: If no schema is defined for the given endpoint.
     """
     violations = []
     response_id = str(data.get('id', '<missing_id>'))
@@ -158,19 +157,18 @@ def validate_single_response(data: dict, endpoint_key: str, context: AssetExecut
         )
 
 def validate_batch_responses(data: List[dict], endpoint_key: str, context: AssetExecutionContext) -> List[Union[ExpectedPagesSchema, ExpectedMediaSchema]]:
-    """
-    Validate schema of all fetched WordPress API responses using endpoint-specific schema.
+    """Validate schema of all fetched WordPress API responses.
     
-    Arguments:
-        data: List of dictionaries containing WordPress data
-        endpoint_key: The endpoint key (e.g., 'pages', 'media') to determine which schema to use
-        context: Dagster AssetExecutionContext for logging purposes
+    Args:
+        data (List[dict]): List of dictionaries containing WordPress data.
+        endpoint_key (str): The endpoint key (e.g., 'pages', 'media') to determine schema.
+        context (AssetExecutionContext): Dagster AssetExecutionContext for logging.
     
     Returns:
-        List[Union[ExpectedPagesSchema, ExpectedMediaSchema]]: List of validated Pydantic model instances
+        List[Union[ExpectedPagesSchema, ExpectedMediaSchema]]: List of validated Pydantic models.
     
     Raises:
-        SchemaViolationError: Custom exception containing details of schema violations
+        SchemaViolationError: Custom exception containing details of schema violations.
     """
     validated_records = []
     for item in data:

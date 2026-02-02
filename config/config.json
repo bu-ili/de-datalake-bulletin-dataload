@@ -1,4 +1,5 @@
 {
+    "base_url": "https://www.bu.edu/academics/wp-json/wp/v2/",
     "endpoints": {
         "pages": "pages?",
         "media": "media?"

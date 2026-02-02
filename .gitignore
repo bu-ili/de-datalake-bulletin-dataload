@@ -214,3 +214,14 @@ data/
 
 # Temp Dagster files
 .tmp_dagster*
+
+# Ignore generated asset doc files
+docs/assets/
+
+# macOS system files
+.DS_Store
+
+# Local data folders
+data/
+k8s/
+bulletin_raw/
