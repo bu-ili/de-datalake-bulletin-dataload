@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bulletin-dataload
+  namespace: dagster
+  labels:
+    app: bulletin-dataload
+    component: code-location
+spec:
+  type: ClusterIP
+  selector:
+    app: bulletin-dataload
+    component: code-location
+  ports:
+  - name: grpc
+    port: 4000
+    targetPort: grpc
+    protocol: TCP
+  sessionAffinity: None

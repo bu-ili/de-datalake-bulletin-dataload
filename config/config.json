@@ -5,5 +5,11 @@
         "media": "media?"
     },
     "pagination": "per_page=100&page=",
-    "sensor_param": "?per_page=1&page=1&_fields=modified&orderby=modified&order=desc"
+    "sensor_param": "?per_page=1&page=1&_fields=modified&orderby=modified&order=desc",
+    "http_client": {
+        "max_connections": 50,
+        "max_keepalive_connections": 20,
+        "connect_timeout": 10.0,
+        "total_timeout": 30.0
+    }
 }

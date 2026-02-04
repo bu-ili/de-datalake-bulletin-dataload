@@ -1,0 +1,134 @@
+name: Build and Push Container
+
+# =============================================================================
+# TRIGGERS
+# =============================================================================
+# This workflow builds and pushes container images to GitHub Container Registry
+# with environment-specific tags based on the branch.
+#
+# Trigger Behavior:
+# - dev branch:   Pushes image with 'dev' tag
+# - test branch:  Pushes image with 'test' tag
+# - main branch:  Pushes image with 'latest' and 'YYYYMMDD-{sha}' tags
+# - manual:       Can be triggered manually via workflow_dispatch
+# =============================================================================
+
+on:
+  push:
+    branches:
+      - dev
+      - test
+      - main
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual trigger'
+        required: false
+        type: string
+
+# Cancel in-progress runs for the same branch to save resources
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimum required permissions for container registry push
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: bu-ili/de-bulletin
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      # =======================================================================
+      # SETUP
+      # =======================================================================
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # Enable build caching and optimizations
+          driver-opts: image=moby/buildkit:latest
+
+      # =======================================================================
+      # AUTHENTICATION
+      # =======================================================================
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # =======================================================================
+      # METADATA & TAGGING
+      # =======================================================================
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # Branch-based tags for dev and test
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=raw,value=test,enable=${{ github.ref == 'refs/heads/test' }}
+
+            # For main branch: latest + CalVer with SHA
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value={{date 'YYYYMMDD'}}-{{sha}},enable=${{ github.ref == 'refs/heads/main' }}
+
+          # Add useful labels for container metadata
+          labels: |
+            org.opencontainers.image.title=Bulletin Data DAG
+            org.opencontainers.image.description=Dagster pipeline for loading BU Bulletin data to S3
+            org.opencontainers.image.vendor=Boston University
+
+      # =======================================================================
+      # BUILD & PUSH
+      # =======================================================================
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+
+          # Enable layer caching for faster builds
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+          # Add build provenance attestations (SLSA compliance)
+          provenance: true
+          sbom: true
+
+      # =======================================================================
+      # OUTPUT
+      # =======================================================================
+
+      - name: Output image details
+        run: |
+          echo "## Container Image Built Successfully! 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Registry:** ${{ env.REGISTRY }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY

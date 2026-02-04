@@ -1,5 +1,34 @@
 # Changelog
 
+## [v1.3.0] - 2026-02-04
+### CI/CD & Deployment
+- Implemented GitHub Actions workflow with CalVer tagging strategy
+  - Dev branch pushes to `ghcr.io/bu-ili/de-bulletin:dev`
+  - Test branch pushes to `ghcr.io/bu-ili/de-bulletin:test`
+  - Main branch pushes to `ghcr.io/bu-ili/de-bulletin:latest` and `YYYYMMDD-{sha}` tags
+- Migrated from local k3d-only workflow to dual deployment strategy (GHCR + local k3d)
+
+### Kubernetes
+- Updated deployment manifests to use GitHub Container Registry (ghcr.io)
+- Added `imagePullSecrets` configuration for GHCR authentication
+- Enhanced security context with explicit `runAsNonRoot: true` at container level
+- Updated image references from placeholder ACR to production GHCR paths
+
+### Configuration
+- Standardized ConfigMap naming conventions (removed typo in USER_AGENT)
+- Updated Secret templates with clearer placeholder documentation
+- Enhanced k8s/README.md with comprehensive deployment instructions
+  - Added GHCR authentication setup
+  - Documented CalVer tagging strategy and usage patterns
+  - Added troubleshooting section for common deployment issues
+  - Included rollback procedures and image tag management
+
+### Developer Experience
+- Created sync tooling for local k3d testing environment
+  - `sync-from-ghcr.sh` - Pull images from GHCR to local k3d registry
+  - `bulletin.conf` - Centralized configuration for sync scripts
+- Simplified local development workflow with clear separation between fast iteration (local builds) and production-like testing (GHCR images)
+
 ## [v1.2.0] - 2026-02-02
 ### Performance & Optimization
 - Optimized async HTTP fetching with HTTP/2 support (50 max connections, 20 keepalive connections)

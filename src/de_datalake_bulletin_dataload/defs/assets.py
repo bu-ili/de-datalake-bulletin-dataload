@@ -3,11 +3,9 @@ import asyncio
 import httpx
 from datetime import datetime
 import time
-import json
-import polars as pl
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from typing import Optional
-from de_datalake_bulletin_dataload.defs.resources import HTTPClientResource, ParquetExportResource, AWSS3Resource
+from de_datalake_bulletin_dataload.defs.resources import ConfigResource, ParquetExportResource, AWSS3Resource
 from de_datalake_bulletin_dataload.defs.validators import validate_batch_responses
 from de_datalake_bulletin_dataload.defs.data_exporters import export_to_parquet, export_to_s3
 
@@ -69,14 +67,13 @@ async def fetch_page(session: httpx.AsyncClient, page_number: int, total_pages: 
         return []
 
 
-async def fetch_all_pages(http_client: HTTPClientResource, endpoint_key: str, context: AssetExecutionContext) -> list:
-    """
-    Fetch all pages concurrently from the Wordpress Bulletin API.
+async def fetch_all_pages(get_config: ConfigResource, endpoint_key: str, context: AssetExecutionContext) -> list:
+    """Fetch all pages concurrently from the Wordpress Bulletin API.
     
     Utilizes httpx with HTTP/2 for improved performance and asyncio for concurrency.
     
     Args:
-        http_client (HTTPClientResource): HTTPClientResource containing base URL and headers.
+        get_config (ConfigResource): ConfigResource containing configuration and HTTP settings.
         endpoint_key (str): The endpoint key to fetch data from (e.g., 'pages', 'media').
         context (AssetExecutionContext): Dagster AssetExecutionContext for logging.
     
@@ -86,18 +83,19 @@ async def fetch_all_pages(http_client: HTTPClientResource, endpoint_key: str, co
     Raises:
         Exception: If any error occurs during the HTTP request.
     """
-    base_url = http_client.get_all_endpoint_urls()[endpoint_key]
-    limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
-    timeout = httpx.Timeout(30.0, connect=10.0)
-    async with httpx.AsyncClient(limits=limits, timeout=timeout, http2=True) as session:
-        response = await session.get(url=f"{base_url}1", headers=http_client.get_headers())
+    base_url = get_config.get_all_endpoint_urls()[endpoint_key]
+    client_config = get_config.get_http_client_config()
+    headers = get_config.get_headers()
+    
+    async with httpx.AsyncClient(**client_config) as session:
+        response = await session.get(url=f"{base_url}1", headers=headers)
         total_pages = int(response.headers.get("X-WP-TotalPages", 1))
         first_page_data = response.json()
 
         context.log.info(f"Total pages to fetch for '{endpoint_key}': {total_pages}")
 
         tasks = [
-            fetch_page(session, page_num, total_pages, base_url, http_client.get_headers(), context)
+            fetch_page(session, page_num, total_pages, base_url, headers, context)
             for page_num in range(1, total_pages + 1)
         ]
         
@@ -107,14 +105,13 @@ async def fetch_all_pages(http_client: HTTPClientResource, endpoint_key: str, co
         
         return all_data
     
-async def fetch_multiple_endpoints(http_client: HTTPClientResource, endpoint_keys: list[str], context: AssetExecutionContext) -> dict[str, list]:
-    """
-    Fetch data from multiple endpoints concurrently.
+async def fetch_multiple_endpoints(get_config: ConfigResource, endpoint_keys: list[str], context: AssetExecutionContext) -> dict[str, list]:
+    """Fetch data from multiple endpoints concurrently.
     
     Utilizes asyncio for concurrency and fetch_all_pages for individual endpoint retrieval.
     
     Args:
-        http_client (HTTPClientResource): HTTPClientResource containing base URL and headers.
+        get_config (ConfigResource): ConfigResource containing configuration and HTTP settings.
         endpoint_keys (list[str]): List of endpoint keys to fetch (e.g., ['pages', 'media']).
         context (AssetExecutionContext): Dagster AssetExecutionContext for logging.
     
@@ -128,7 +125,7 @@ async def fetch_multiple_endpoints(http_client: HTTPClientResource, endpoint_key
     
     # Fetch all endpoints concurrently
     tasks = [
-        fetch_all_pages(http_client, endpoint_key, context)
+        fetch_all_pages(get_config, endpoint_key, context)
         for endpoint_key in endpoint_keys
     ]
     
@@ -148,9 +145,9 @@ async def fetch_multiple_endpoints(http_client: HTTPClientResource, endpoint_key
 
 @asset(
     name="bulletin_pages",
-    group_name="de_datalake_bulletin",
+    group_name="bulletin_raw",
 )
-async def fetch_export_pages_data(context: AssetExecutionContext, config: RuntimeConfig, http_client: HTTPClientResource, parquet_export_path: ParquetExportResource, aws_s3_config: AWSS3Resource) -> str:
+async def fetch_export_pages_data(context: AssetExecutionContext, config: RuntimeConfig, get_config: ConfigResource, parquet_export_path: ParquetExportResource, aws_s3_config: AWSS3Resource) -> str:
     """
     Fetch pages data from Bulletin API, validate, export to Parquet, and upload to S3.
     
@@ -160,7 +157,7 @@ async def fetch_export_pages_data(context: AssetExecutionContext, config: Runtim
     Args:
         context (AssetExecutionContext): Dagster AssetExecutionContext for logging.
         config (RuntimeConfig): Runtime configuration for partitioning and S3 upload.
-        http_client (HTTPClientResource): HTTPClientResource for making API requests.
+        get_config (ConfigResource): ConfigResource for configuration and HTTP settings.
         parquet_export_path (ParquetExportResource): ParquetExportResource for export settings.
         aws_s3_config (AWSS3Resource): AWSS3Resource for managing AWS S3 connections.
 
@@ -173,21 +170,17 @@ async def fetch_export_pages_data(context: AssetExecutionContext, config: Runtim
     start_time = time.perf_counter()
     endpoint_key = "pages"
     
-    # Generate timestamps if not provided
     load_date = config.load_date or datetime.now().strftime("%Y-%m-%d")
     load_time = config.load_time or datetime.now().strftime("%H:%M:%S")
     
-    context.log.info(f"Starting bulletin pages data fetch from WordPress API")
+    context.log.info("Starting bulletin pages data fetch from WordPress API")
     
-    # Fetch pages data
-    data = await fetch_all_pages(http_client, endpoint_key, context)
+    data = await fetch_all_pages(get_config, endpoint_key, context)
     
-    # Validate with pages-specific schema
     validated_response = validate_batch_responses(data, endpoint_key, context)
     validated_data = [item.model_dump(by_alias=True) for item in validated_response]
     context.log.info(f"Validated {len(validated_data)} pages records")
     
-    # Export to Parquet
     export_path = export_to_parquet(
         export_path=parquet_export_path,
         validated_data=validated_data,
@@ -207,7 +200,7 @@ async def fetch_export_pages_data(context: AssetExecutionContext, config: Runtim
         context.log.info(f"Uploaded pages data to S3: {aws_s3_path}")
         result_path = aws_s3_path
     else:
-        context.log.info(f"Skipping S3 upload for pages as per configuration")
+        context.log.info("Skipping S3 upload for pages as per configuration")
         result_path = export_path
     
     total_time = time.perf_counter() - start_time
@@ -218,9 +211,9 @@ async def fetch_export_pages_data(context: AssetExecutionContext, config: Runtim
 
 @asset(
     name="bulletin_media",
-    group_name="de_datalake_bulletin",
+    group_name="bulletin_raw",
 )
-async def fetch_export_media_data( context: AssetExecutionContext, config: RuntimeConfig, http_client: HTTPClientResource, parquet_export_path: ParquetExportResource, aws_s3_config: AWSS3Resource) -> str:
+async def fetch_export_media_data( context: AssetExecutionContext, config: RuntimeConfig, get_config: ConfigResource, parquet_export_path: ParquetExportResource, aws_s3_config: AWSS3Resource) -> str:
     """
     Fetch media data from Bulletin API, validate, export to Parquet, and upload to S3.
     
@@ -230,7 +223,7 @@ async def fetch_export_media_data( context: AssetExecutionContext, config: Runti
     Args:
         context (AssetExecutionContext): Dagster AssetExecutionContext for logging.
         config (RuntimeConfig): Runtime configuration for partitioning and S3 upload.
-        http_client (HTTPClientResource): HTTPClientResource for making API requests.
+        get_config (ConfigResource): ConfigResource for configuration and HTTP settings.
         parquet_export_path (ParquetExportResource): ParquetExportResource for export settings.
         aws_s3_config (AWSS3Resource): AWSS3Resource for managing AWS S3 connections.
 
@@ -243,13 +236,12 @@ async def fetch_export_media_data( context: AssetExecutionContext, config: Runti
     start_time = time.perf_counter()
     endpoint_key = "media"
     
-    # Generate timestamps if not provided
     load_date = config.load_date or datetime.now().strftime("%Y-%m-%d")
     load_time = config.load_time or datetime.now().strftime("%H:%M:%S")
     
-    context.log.info(f"Starting bulletin media data fetch from WordPress API")
+    context.log.info("Starting bulletin media data fetch from WordPress API")
     
-    data = await fetch_all_pages(http_client, endpoint_key, context)
+    data = await fetch_all_pages(get_config, endpoint_key, context)
     
     validated_response = validate_batch_responses(data, endpoint_key, context)
     validated_data = [item.model_dump(by_alias=True) for item in validated_response]
@@ -274,7 +266,7 @@ async def fetch_export_media_data( context: AssetExecutionContext, config: Runti
         context.log.info(f"Uploaded media data to S3: {aws_s3_path}")
         result_path = aws_s3_path
     else:
-        context.log.info(f"Skipping S3 upload for media as per configuration")
+        context.log.info("Skipping S3 upload for media as per configuration")
         result_path = export_path
     
     total_time = time.perf_counter() - start_time

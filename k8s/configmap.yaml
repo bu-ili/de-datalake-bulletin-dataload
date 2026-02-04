@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bulletin-dataload-config
+  namespace: dagster
+  labels:
+    app: bulletin-dataload
+    component: code-location
+data:
+  # WordPress API Configuration
+  BULLETIN_WP_BASE_URL: "https://www.bu.edu/academics/wp-json/wp/v2/"
+  USER_AGENT: "de-datalake-bulletin-dataload-1.2.0"
+  CONFIG_PATH: "/app/config/config.json"
+  SENSOR_QUERY_PARAM: "?per_page=1&page=1&_fields=modified&orderby=modified&order=desc"
+  
+  # Parquet Export Configuration
+  PARQUET_EXPORT_FOLDER_PATH: "/app/data/parquet/"
+  PARQUET_EXPORT_FILE_NAME: "de_bulletin_data.parquet"

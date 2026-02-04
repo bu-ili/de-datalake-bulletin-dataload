@@ -1,0 +1,149 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bulletin-dataload
+  namespace: dagster
+  labels:
+    app: bulletin-dataload
+    component: code-location
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bulletin-dataload
+      component: code-location
+  template:
+    metadata:
+      labels:
+        app: bulletin-dataload
+        component: code-location
+        version: v1
+    spec:
+      # Image pull secret for GitHub Container Registry
+      imagePullSecrets:
+      - name: ghcr-secret
+
+      serviceAccountName: dagster-code-location
+      
+      containers:
+      - name: bulletin-dataload
+        image: ghcr.io/bu-ili/de-datalake-bulletin-dataload:latest
+        imagePullPolicy: Always
+        
+        ports:
+        - name: grpc
+          containerPort: 4000
+          protocol: TCP
+        
+        env:
+        # ConfigMap values
+        - name: BULLETIN_WP_BASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: bulletin-dataload-config
+              key: BULLETIN_WP_BASE_URL
+        - name: USER_AGENT
+          valueFrom:
+            configMapKeyRef:
+              name: bulletin-dataload-config
+              key: USER_AGENT
+        - name: CONFIG_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: bulletin-dataload-config
+              key: CONFIG_PATH
+        - name: SENSOR_QUERY_PARAM
+          valueFrom:
+            configMapKeyRef:
+              name: bulletin-dataload-config
+              key: SENSOR_QUERY_PARAM
+        - name: PARQUET_EXPORT_FOLDER_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: bulletin-dataload-config
+              key: PARQUET_EXPORT_FOLDER_PATH
+        - name: PARQUET_EXPORT_FILE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: bulletin-dataload-config
+              key: PARQUET_EXPORT_FILE_NAME
+        
+        # Secret values
+        - name: AWS_S3_BUCKET_NAME
+          valueFrom:
+            secretKeyRef:
+              name: bulletin-dataload-secret
+              key: AWS_S3_BUCKET_NAME
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: bulletin-dataload-secret
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: bulletin-dataload-secret
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_REGION_NAME
+          valueFrom:
+            secretKeyRef:
+              name: bulletin-dataload-secret
+              key: AWS_REGION_NAME
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "ps aux | grep 'dagster api grpc' | grep -v grep"
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          tcpSocket:
+            port: grpc
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        volumeMounts:
+        - name: data-volume
+          mountPath: /app/data
+        - name: cache-volume
+          mountPath: /app/.cache
+      
+      # Pod-level security settings
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+      
+      volumes:
+      - name: data-volume
+        emptyDir: {}
+      - name: cache-volume
+        emptyDir: {}
+      
+      restartPolicy: Always
