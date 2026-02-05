@@ -1,4 +1,4 @@
-from dagster import asset, AssetExecutionContext, Config
+from dagster import asset, AssetExecutionContext
 import asyncio
 import httpx
 from datetime import datetime
@@ -21,30 +21,10 @@ from de_datalake_bulletin_dataload.defs.data_exporters import (
     export_to_s3
 )
 from de_datalake_bulletin_dataload.defs.utilities import (
-    get_last_modified_from_parquet,
-    cleanup_old_local_files
+    cleanup_old_local_files,
+    determine_filter_date,
+    RuntimeConfig,
 )
-
-
-class RuntimeConfig(Config):
-    """
-    Runtime configuration for assets that fetch data from the BU Bulletin Wordpress API.
-
-    Attributes:
-        upload_to_s3 (bool): Flag to enable/disable S3 upload. Default is False for testing.
-        load_date (str): Date string for partitioning (YYYY-MM-DD). Defaults to current date.
-        load_time (str): Time string for partitioning (HH:MM:SS). Defaults to current time.
-        last_modified_date (str): ISO 8601 datetime string for filtering records modified after this date.
-                                  Enables incremental loads. If None, fetches all data (full refresh).
-        full_refresh (bool): When True, bypasses incremental logic and fetches all data regardless
-                           of last_modified_date. Default is False.
-    """
-
-    upload_to_s3: bool = False
-    load_date: Optional[str] = None
-    load_time: Optional[str] = None
-    last_modified_date: Optional[str] = None
-    full_refresh: bool = False
 
 
 @retry(
@@ -102,23 +82,21 @@ async def fetch_all_pages(
     get_config: ConfigResource,
     endpoint_key: str,
     context: AssetExecutionContext,
-    config: RuntimeConfig,
-    parquet_export_path: ParquetExportResource,
+    filter_date: Optional[str],
 ) -> list:
     """Fetch all pages concurrently from the Wordpress Bulletin API.
 
     Utilizes httpx with HTTP/2 for improved performance and asyncio for concurrency.
-    Supports incremental loads via modified_after filter when last_modified_date is provided.
+    Supports incremental loads via modified_after filter when filter_date is provided.
 
     Args:
         get_config (ConfigResource): ConfigResource containing configuration and HTTP settings.
         endpoint_key (str): The endpoint key to fetch data from (e.g., 'pages', 'media').
         context (AssetExecutionContext): Dagster AssetExecutionContext for logging.
-        config (RuntimeConfig): Runtime configuration with last_modified_date and full_refresh flags.
-        parquet_export_path (ParquetExportResource): Resource for Parquet export path.
+        filter_date (Optional[str]): ISO 8601 datetime string to filter by. None for full refresh.
 
     Returns:
-        list: API response data for all available pages. Empty list if no new data since last_modified_date.
+        list: API response data for all available pages. Empty list if no new data since filter_date.
 
     Raises:
         Exception: If any error occurs during the HTTP request.
@@ -128,24 +106,12 @@ async def fetch_all_pages(
     idempotency_param = get_config.get_config_value("idempotency_param", required=True)
     loop_pagination_param = get_config.get_config_value("loop_pagination_param", required=True)
 
-    if config.full_refresh:
-        context.log.info(f"Full refresh: Fetching all {endpoint_key} data")
-        filter_date = None
-    elif config.last_modified_date:
-        context.log.info(f"Incremental load: Using provided date {config.last_modified_date}")
-        filter_date = config.last_modified_date
-    else:
-        filter_date = get_last_modified_from_parquet(
-            endpoint_key, parquet_export_path.export_folder_path, get_config
-        )
-        context.log.info(
-            f"Incremental load: Auto-discovered baseline from local Parquet: {filter_date}"
-        )
-
     if filter_date and filter_date != default_baseline:
         request_base_url = f"{base_url}{idempotency_param}{filter_date}{loop_pagination_param}"
+        context.log.info(f"Building filtered request URL with modified_after={filter_date}")
     else:
         request_base_url = f"{base_url}{loop_pagination_param}"
+        context.log.info("Building unfiltered request URL (fetching all records)")
 
     client_config = get_config.get_http_client_config()
     headers = get_config.get_headers()
@@ -220,9 +186,12 @@ async def fetch_export_pages_data(
 
     context.log.info("Starting bulletin pages data fetch from WordPress API")
 
-    data = await fetch_all_pages(
-        get_config, endpoint_key, context, config, parquet_export_path
+    # Determine filter date for incremental loading
+    filter_date = determine_filter_date(
+        endpoint_key, config, parquet_export_path, get_config, context
     )
+
+    data = await fetch_all_pages(get_config, endpoint_key, context, filter_date)
 
     # Handle empty response (no new data since last modified date)
     if not data:
@@ -310,9 +279,12 @@ async def fetch_export_media_data(
 
     context.log.info("Starting bulletin media data fetch from WordPress API")
 
-    data = await fetch_all_pages(
-        get_config, endpoint_key, context, config, parquet_export_path
+    # Determine filter date for incremental loading
+    filter_date = determine_filter_date(
+        endpoint_key, config, parquet_export_path, get_config, context
     )
+
+    data = await fetch_all_pages(get_config, endpoint_key, context, filter_date)
 
     # Handle empty response (no new data since last modified date)
     if not data:

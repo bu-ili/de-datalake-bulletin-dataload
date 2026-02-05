@@ -3,8 +3,30 @@ import glob
 import shutil
 import polars as pl
 from pathlib import Path
-from dagster import AssetExecutionContext
-from de_datalake_bulletin_dataload.defs.resources import ConfigResource
+from typing import Optional
+from dagster import AssetExecutionContext, Config
+from de_datalake_bulletin_dataload.defs.resources import ConfigResource, ParquetExportResource
+
+
+class RuntimeConfig(Config):
+    """
+    Runtime configuration for assets that fetch data from the BU Bulletin Wordpress API.
+
+    Attributes:
+        upload_to_s3 (bool): Flag to enable/disable S3 upload. Default is False for testing.
+        load_date (str): Date string for partitioning (YYYY-MM-DD). Defaults to current date.
+        load_time (str): Time string for partitioning (HH:MM:SS). Defaults to current time.
+        last_modified_date (str): ISO 8601 datetime string for filtering records modified after this date.
+                                  Enables incremental loads. If None, fetches all data (full refresh).
+        full_refresh (bool): When True, bypasses incremental logic and fetches all data regardless
+                           of last_modified_date. Default is False.
+    """
+
+    upload_to_s3: bool = False
+    load_date: Optional[str] = None
+    load_time: Optional[str] = None
+    last_modified_date: Optional[str] = None
+    full_refresh: bool = False
 
 def fetch_latest_modified_date(endpoint: str, get_config: ConfigResource) -> str:
     """Fetch the most recent modified date from Bulletin Wordpress API for an endpoint.
@@ -89,6 +111,51 @@ def get_last_modified_from_parquet(
         print(f"Error reading Parquet for {endpoint}: {e}")
 
     return default_baseline
+
+
+def determine_filter_date(
+    endpoint_key: str,
+    config: RuntimeConfig,
+    parquet_export_path: ParquetExportResource,
+    get_config: ConfigResource,
+    context: AssetExecutionContext,
+) -> Optional[str]:
+    """
+    Determine the filter date for incremental data loading.
+
+    Decision logic:
+    1. If full_refresh=True → return None (fetch all data)
+    2. If last_modified_date is provided → use it
+    3. Otherwise → auto-discover from existing Parquet files
+
+    Args:
+        endpoint_key (str): API endpoint key (e.g., 'pages', 'media').
+        config (RuntimeConfig): Runtime configuration with full_refresh and last_modified_date.
+        parquet_export_path (ParquetExportResource): Resource for Parquet export path.
+        get_config (ConfigResource): ConfigResource for getting configuration constants.
+        context (AssetExecutionContext): For logging.
+
+    Returns:
+        Optional[str]: ISO 8601 datetime string to filter by, or None for full refresh.
+    """
+    if config.full_refresh:
+        context.log.info(f"Full refresh: Fetching all {endpoint_key} data (full_refresh=True)")
+        return None
+    
+    if config.last_modified_date:
+        context.log.info(
+            f"Incremental load: Using provided date {config.last_modified_date} for {endpoint_key}"
+        )
+        return config.last_modified_date
+    
+    # Auto-discover from Parquet files
+    filter_date = get_last_modified_from_parquet(
+        endpoint_key, parquet_export_path.export_folder_path, get_config
+    )
+    context.log.info(
+        f"Incremental load: Auto-discovered baseline from local Parquet for {endpoint_key}: {filter_date}"
+    )
+    return filter_date
 
 
 def cleanup_old_local_files(
