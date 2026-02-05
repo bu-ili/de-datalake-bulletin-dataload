@@ -1,5 +1,70 @@
 # Changelog
 
+## [v1.5.0] - 2026-02-05
+### Code Refactoring & Architecture
+- **Centralized all configuration constants** in `config.json`
+  - Moved all hardcoded path variables to config (partition prefixes, file extensions, etc.)
+  - Eliminated explicit string concatenations that produced URLs throughout codebase
+  - Enhanced maintainability and consistency using config.json
+
+- **Consolidated ConfigResource methods** for simplified API
+  - Removed individual getter methods (`get_base_url()`, `get_pagination_param()`, etc.)
+  - Introduced unified `get_config_value(key, default, required)` method
+  - Consistent error handling with clear validation messages
+
+- **Resolved circular import** between `schedules.py` and `assets.py`
+  - Created `utilities.py` module for shared functions
+  - Moved `get_last_modified_from_parquet()` and `fetch_latest_modified_date()` to utilities
+  - Improved code organization and dependency structure
+
+- **Migrated cleanup functionality** to utilities module
+  - Moved `cleanup_old_local_files()` from `data_exporters.py` to `utilities.py`
+  - Decoupled cleanup logic from S3 export function
+  - Assets now call cleanup directly after successful S3 upload
+  - Made `get_config` a required parameter
+
+### Bug Fixes
+- **Fixed URL construction** for paginated API requests
+  - Corrected page parameter format to `&page=` instead of improper concatenation
+  - Ensures proper API query string formatting
+
+### Code Quality
+- Used config-driven approach for all path construction
+- Improved error messages and validation in ConfigResource
+- Enhanced code modularity
+
+## [v1.4.0] - 2026-02-05
+### Architecture & Performance
+- **Migrated from sensor to schedule-based execution** for cost reduction in production
+  - Changed from 24/7 running sensor to daily cron schedule (10:00 AM UTC)
+  - Reduces EKS pod runtime from 730 hours/month to ~10 hours/month
+  
+- **Implemented idempotent incremental loads** using WordPress API `modified_after` filter
+  - Assets now receive `last_modified_date` from schedule cursor
+  - Only fetches records modified since last successful run
+  - Supports `full_refresh=True` flag to bypass incremental logic
+  - Gracefully handles empty responses (no new data since last run)
+
+### Configuration
+- Made HTTP/2 support runtime configurable via `config.json`
+  - Added `http2` boolean flag to `http_client` configuration block
+  - Defaults to `true` for better performance and reduced server load
+  - Can be disabled for compatibility or debugging purposes
+- Enhanced `RuntimeConfig` with incremental load parameters:
+  - `last_modified_date`: ISO 8601 datetime for filtering API queries
+  - `full_refresh`: Boolean flag to force complete data refresh
+
+### Code Quality
+- Updated `fetch_all_pages()` to support filtered API queries with `modified_after` parameter
+- Enhanced asset functions to handle empty data responses gracefully
+- Converted `bulletin_data_sensor` to `bulletin_daily_schedule` with cursor support
+- Updated docstrings to reflect schedule-based execution model
+
+### Migration Notes
+- Schedule runs daily at 10:00 AM UTC (configurable via `cron_schedule`)
+- Cursor format unchanged: `pages_modified|media_modified`
+- For manual runs, set `full_refresh=true` to fetch all data
+
 ## [v1.3.0] - 2026-02-04
 ### CI/CD & Deployment
 - Implemented GitHub Actions workflow with CalVer tagging strategy

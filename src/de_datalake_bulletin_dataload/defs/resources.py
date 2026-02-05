@@ -35,78 +35,20 @@ class ConfigResource(ConfigurableResource):
         with open(self.config_path, "r") as f:
             return json.load(f)
 
-    def get_endpoints(self) -> Dict[str, str]:
-        """
-        Get endpoints dictionary from config.
-
-        Returns:
-            Dict[str, str]: Endpoints mapping from config file.
-
-        Raises:
-            ValueError: If 'endpoints' field is missing or empty in config file.
-        """
-        config = self.load_config()
-        endpoints = config.get("endpoints", {})
-        if not endpoints:
-            raise ValueError("'endpoints' field is missing or empty in config file")
-        return endpoints
-
     def get_endpoint_keys(self) -> list:
-        """
-        Get list of all available endpoint keys.
+        """Get list of all available endpoint keys.
 
         Returns:
             list: List of endpoint keys.
 
         Raises:
-            ValueError: If 'endpoints' field is missing or empty in config file via get_endpoints().
+            ValueError: If 'endpoints' field is missing or empty in config file.
         """
-        return list(self.get_endpoints().keys())
-
-    def get_pagination_param(self) -> str:
-        """
-        Get pagination parameter from config that drives page size for API requests.
-
-        Returns:
-            str: Pagination parameter.
-
-        Raises:
-            ValueError: If 'pagination' field is missing or empty in config file.
-        """
-        config = self.load_config()
-        pagination = config.get("pagination", "")
-        if not pagination:
-            raise ValueError("'pagination' field is missing or empty in config file")
-        return pagination
-
-    def get_sensor_param(self) -> str:
-        """
-        Get sensor parameter from config that drives data change detection.
-
-        Returns:
-            str: Sensor parameter for determining if DAG should materialize.
-
-        Raises:
-            ValueError: If 'sensor_param' field is missing or empty in config file.
-        """
-        config = self.load_config()
-        return config.get("sensor_param", "")
-
-    def get_base_url(self) -> str:
-        """
-        Get base URL from config file.
-
-        Returns:
-            str: Base URL for API requests.
-
-        Raises:
-            ValueError: If base_url is missing or empty in config file.
-        """
-        config = self.load_config()
-        base_url = config.get("base_url", "")
-        if not base_url:
-            raise ValueError("base_url is missing or empty in config file")
-        return base_url
+        endpoints = self.get_config_value("endpoints", default={}, required=True)
+        endpoint_keys = endpoints.keys()
+        if not endpoint_keys:
+            raise ValueError("No endpoint keys found in config file")
+        return list(endpoint_keys)
 
     def get_user_agent(self) -> str:
         """
@@ -155,23 +97,44 @@ class ConfigResource(ConfigurableResource):
             "timeout": httpx.Timeout(
                 http_config["total_timeout"], connect=http_config["connect_timeout"]
             ),
-            "http2": http_config["enable_http2"],
+            "http2": http_config.get("http2", False),
         }
 
     def get_all_endpoint_urls(self) -> Dict[str, str]:
-        """
-        Get full URLs for all configured endpoints.
+        """Get full URLs for all configured endpoints.
 
         Returns:
             Dict[str, str]: Mapping of endpoint keys to full URLs with pagination.
         """
-        endpoints = self.get_endpoints()
-        pagination_param = self.get_pagination_param()
-        base_url = self.get_base_url()
+        endpoints = self.get_config_value("endpoints", default={}, required=True)
+        pagination_param = self.get_config_value("loop_pagination_param", default="", required=True)
+        base_url = self.get_config_value("base_url", default="", required=True)
         return {
             key: f"{base_url}{path}{pagination_param}"
             for key, path in endpoints.items()
         }
+
+    def get_config_value(self, key: str, default=None, required=False):
+        """Get a value from config by key.
+        
+        Args:
+            key (str): The config key to retrieve.
+            default: Default value if key not found (only used if required=False).
+            required (bool): If True, raises ValueError when key is missing or empty.
+            
+        Returns:
+            The config value.
+            
+        Raises:
+            ValueError: If required=True and key is missing or value is empty.
+        """
+        config = self.load_config()
+        value = config.get(key, default)
+        
+        if required and not value:
+            raise ValueError(f"'{key}' is missing or empty in config file")
+        
+        return value
 
 
 class ParquetExportResource(ConfigurableResource):

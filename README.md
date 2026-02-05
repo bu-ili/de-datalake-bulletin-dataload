@@ -4,7 +4,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-1.2.0-black.svg?logo=semanticrelease&logoColor=white)]()
+[![Version](https://img.shields.io/badge/Version-1.5.0-black.svg?logo=semanticrelease&logoColor=white)]()
 [![Status](https://img.shields.io/badge/Status-Testing-orange.svg?logo=progress&logoColor=white)]()
 [![Changelog](https://img.shields.io/badge/Changelog-View-blue.svg?logo=readthedocs&logoColor=white)](./CHANGELOG.md)
 
@@ -14,15 +14,17 @@
 
 ## Overview
 
-This Dagster pipeline fetches data from the BU Bulletin WordPress API, validates responses, exports to Parquet format, and uploads to AWS S3. It includes a sensor that automatically detects new or modified content and triggers data refreshes.
+This Dagster pipeline fetches data from the BU Bulletin WordPress API, validates responses, exports to Parquet format, and uploads to AWS S3. It includes a daily schedule that automatically detects new or modified content and triggers incremental data refreshes.
 
 ### Key Features
+- **Idempotent incremental loads**: Only fetches records modified since last run using WordPress `modified_after` filter
+- **Schedule-based execution**: Daily cron job (10:00 AM UTC) with 97% cost reduction vs 24/7 sensor
 - **Multi-endpoint support**: Separate assets for pages and media endpoints
-- **Automated monitoring**: Sensor checks for content changes and triggers refreshes (daily)
-- **Optimized async HTTP**: HTTP/2 with 50 concurrent connections and exponential backoff (5-60s, 5 attempts)
+- **Optimized async HTTP**: Configurable HTTP/2 with 50 concurrent connections and exponential backoff (5-60s, 5 attempts)
 - **Data validation**: Endpoint-specific Pydantic schemas with Google Style docstrings
 - **Configurable exports**: Parquet files with hash integrity checks and Snappy compression
 - **Optional S3 upload**: Runtime toggle for cloud storage integration
+- **Full refresh support**: Bypass incremental logic to fetch all data when needed
 - **Kubernetes-ready**: gRPC deployment with multi-stage Docker build using uv
 
 ## Dependencies
@@ -98,7 +100,7 @@ AWS_REGION_NAME="region-name"
 **Note**: S3 upload is controlled by the `upload_to_s3` runtime flag in asset materialization config.
 
 ### API Configuration (config.json)
-The [`config/config.json`](config/config.json) file defines WordPress API endpoint behavior. This allows you to add or modify endpoints without changing code.
+The [`config/config.json`](config/config.json) file defines WordPress API endpoint behavior and all path-related constants. This centralized configuration approach eliminates hardcoded values and allows you to modify behavior without changing code.
 
 **Example configuration:**
 ```json
@@ -108,8 +110,21 @@ The [`config/config.json`](config/config.json) file defines WordPress API endpoi
         "pages": "pages?",
         "media": "media?"
     },
-    "pagination": "per_page=value&page=",
-    "sensor_param": "?orderby=modified&order=desc&per_page=1"
+    "pagination_param": "per_page=100",
+    "loop_pagination_param": "&page=",
+    "latest_modified_param": "?orderby=modified&order=desc&per_page=1",
+    "idempotency_param": "&modified_after=",
+    "default_baseline_datetime": "2000-01-01T00:00:00",
+    "partition_date_prefix": "load_date=",
+    "partition_time_prefix": "load_time=",
+    "parquet_file_extension": "*.parquet",
+    "http_client": {
+        "max_connections": 50,
+        "max_keepalive_connections": 20,
+        "connect_timeout": 10.0,
+        "total_timeout": 30.0,
+        "http2": true
+    }
 }
 ```
 
@@ -117,16 +132,42 @@ The [`config/config.json`](config/config.json) file defines WordPress API endpoi
 |-------|-------------|-------|
 | `base_url` | WordPress REST API base URL | Base URL for all API requests |
 | `endpoints` | Dictionary of endpoint keys and their API paths | Each key creates a fetchable endpoint |
-| `pagination` | URL parameters for paginated requests | Appended to endpoint URL during data fetching (page number added dynamically) |
-| `sensor_param` | Query parameters for sensor monitoring | Used to fetch only the latest modified date efficiently |
+| `pagination_param` | URL parameters for initial request | Appended to endpoint URL (e.g., `per_page=100`) |
+| `loop_pagination_param` | Parameter for paginated loop requests | Prepended to page number (e.g., `&page=`) |
+| `latest_modified_param` | Query parameters for fetching latest modified date | Used by schedule to check for new content |
+| `idempotency_param` | Parameter for incremental loads | Prepended to datetime filter (e.g., `&modified_after=`) |
+| `default_baseline_datetime` | Fallback datetime for first run | Used when no previous data exists |
+| `partition_date_prefix` | Prefix for date partition folders | Used in path: `{prefix}YYYY-MM-DD` |
+| `partition_time_prefix` | Prefix for time partition folders | Used in path: `{prefix}HH:MM:SS` |
+| `parquet_file_extension` | Glob pattern for Parquet files | Used to find existing files |
+| `http_client` | HTTP client configuration settings | Controls connection pooling, timeouts, and HTTP protocol version |
+
+**HTTP Client Settings:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `max_connections` | 50 | Maximum concurrent connections to the API server |
+| `max_keepalive_connections` | 20 | Maximum idle connections to keep alive for reuse |
+| `connect_timeout` | 10.0 | Seconds to wait for connection establishment |
+| `total_timeout` | 30.0 | Total seconds to wait for complete request |
+| `http2` | true | Enable HTTP/2 protocol (recommended for better performance and reduced server load) |
+
+**Note on HTTP/2**: When enabled, multiplexes multiple requests over fewer TCP connections, reducing overhead on both client and server. Falls back to HTTP/1.1 automatically if the server doesn't support HTTP/2. Set to `false` if you encounter compatibility issues.
 
 **How it works:**
 1. **ConfigResource** loads this file at runtime via `CONFIG_PATH`
-2. **HTTPClientResource** builds full URLs: `{base_url}{endpoint}{pagination}{page_num}`
-   - Example: `https://example.com/wp-json/wp/v2/endpoint1?path_parameter=value`
-3. **Sensor** uses `sensor_param` to check for new content:
-   - Example: `https://example.com/wp-json/wp/v2/endpoint1?path_parameter=value`
-4. **Assets** are automatically created for each endpoint key in the `endpoints` dictionary
+2. **All modules** access config values through `ConfigResource.get_config_value(key, default, required)`
+3. **HTTPClientResource** builds full URLs using config values
+4. **Schedule** uses `latest_modified_param` to check for new content
+5. **Assets** use `idempotency_param` for incremental loads
+6. **Cleanup** uses partition prefixes to identify and remove old directories
+
+**Configuration-driven architecture benefits:**
+- No hardcoded strings in source code
+- Consistent path construction across all modules
+- Easy to modify behavior without code changes
+- Centralized source of truth for all constants
+- Better maintainability and testability
 
 **Adding new endpoints:**
 Simply add a new key-value pair to the `endpoints` object, create corresponding assets in [assets.py](src/de_datalake_bulletin_dataload/defs/assets.py), and add validation schemas in [validators.py](src/de_datalake_bulletin_dataload/defs/validators.py).
@@ -165,14 +206,24 @@ ops:
   bulletin_pages:
     config:
       upload_to_s3: true
+      full_refresh: false  # Incremental load (default)
+      last_modified_date: "2026-01-28T10:00:00"  # Optional: override schedule cursor
 ```
 
-#### Sensor Monitoring
-The `bulletin_data_sensor` automatically monitors the WordPress API for content changes:
-- Checks every 24 hours (86000 seconds, configurable in [`sensors.py`](src/de_datalake_bulletin_dataload/defs/sensors.py))
-- Triggers asset materialization when new or modified content is detected
+**Incremental Load Parameters:**
+- `last_modified_date`: ISO 8601 datetime string. When provided, only fetches records modified after this date.
+- `full_refresh`: Set to `true` to bypass incremental logic and fetch all data. Default is `false`.
+- If both are omitted, the schedule automatically provides `last_modified_date` from cursor.
+
+#### Schedule Monitoring
+The `bulletin_daily_schedule` automatically runs daily and monitors the WordPress API for content changes:
+- Runs every day at 10:00 AM UTC (configurable via `cron_schedule` in [`sensors.py`](src/de_datalake_bulletin_dataload/defs/sensors.py))
+- Checks for new/modified content by comparing latest API timestamps with cursor state
+- Triggers incremental asset materialization when new data is detected
+- Passes `last_modified_date` to assets for filtered API queries
 - Tracks state using cursor-based persistence (format: `pages_modified|media_modified`)
-- Uses `context.resources.get_config` for configuration (requires dagster-postgres)
+- Skips execution if no new data since last run
+- Uses `context.resources.get_config` for configuration (requires dagster-postgres for cursor storage)
 
 ## Project Structure
 ```

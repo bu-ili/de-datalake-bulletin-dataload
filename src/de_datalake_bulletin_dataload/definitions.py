@@ -8,11 +8,15 @@ from de_datalake_bulletin_dataload.defs.assets import (
     fetch_export_pages_data,
     fetch_export_media_data,
 )
-from de_datalake_bulletin_dataload.defs.sensors import bulletin_data_sensor
+from de_datalake_bulletin_dataload.defs.schedules import (
+    bulletin_daily_schedule,
+    bulletin_raw_job,
+)
 
 defs = Definitions(
     assets=[fetch_export_pages_data, fetch_export_media_data],
-    sensors=[bulletin_data_sensor],
+    schedules=[bulletin_daily_schedule],
+    jobs=[bulletin_raw_job],
     resources={
         "get_config": ConfigResource(config_path=EnvVar("CONFIG_PATH")),
         "parquet_export_path": ParquetExportResource(

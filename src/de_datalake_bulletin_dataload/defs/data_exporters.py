@@ -5,7 +5,7 @@ import json
 import polars as pl
 from de_datalake_bulletin_dataload.defs.resources import (
     ParquetExportResource,
-    AWSS3Resource,
+    AWSS3Resource
 )
 
 
@@ -105,6 +105,7 @@ def export_to_s3(
 
         s3_uri = f"s3://{bucket_name}/{s3_key}"
         context.log.info(f"File uploaded to {s3_uri}")
+
         return s3_uri
     except Exception as e:
         context.log.error(f"Failed to upload {file_path} to S3: {str(e)}")
