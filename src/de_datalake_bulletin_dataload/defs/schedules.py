@@ -22,7 +22,7 @@ bulletin_raw_job = define_asset_job(
 
 
 @schedule(
-    cron_schedule="0 10 * * *",  # Daily at 10:00 AM UTC
+    cron_schedule="*/3 * * * *",
     job=bulletin_raw_job,
     name="bulletin_daily_schedule",
     description="Daily schedule to check for new or modified content in Bulletin API and trigger incremental loads.",
@@ -43,7 +43,7 @@ def bulletin_daily_schedule(context: ScheduleEvaluationContext, get_config: Conf
     """Daily schedule to check for new or modified content in Bulletin API and trigger incremental loads.
 
     Uses cursor to store last known modified dates for both pages and media endpoints
-    in the format 'pages_modified|media_modified'. Runs daily at 10:00 AM UTC.
+    in the format 'pages_modified|media_modified'. Runs every 3 minutes for testing.
 
     Implements idempotent incremental loads by passing last_modified_date to assets,
     which filter API queries to only fetch records modified since the last run.
@@ -75,7 +75,6 @@ def bulletin_daily_schedule(context: ScheduleEvaluationContext, get_config: Conf
         context.log.info(
             "New data detected! Triggering incremental asset materialization."
         )
-
         context.update_cursor(f"{latest_pages}|{latest_media}")
 
         return RunRequest(
@@ -84,15 +83,15 @@ def bulletin_daily_schedule(context: ScheduleEvaluationContext, get_config: Conf
                 "ops": {
                     "bulletin_raw_pages": {
                         "config": {
-                            "upload_to_s3": False,
-                            "last_modified_date": latest_pages,
+                            "upload_to_s3": True,
+                            "last_modified_date": last_pages_modified,
                             "full_refresh": False,
                         }
                     },
                     "bulletin_raw_media": {
                         "config": {
-                            "upload_to_s3": False,
-                            "last_modified_date": latest_media,
+                            "upload_to_s3": True,
+                            "last_modified_date": last_media_modified,
                             "full_refresh": False,
                         }
                     },
