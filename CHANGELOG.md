@@ -1,5 +1,68 @@
 # Changelog
 
+## [v1.6.0] - 2026-02-06
+### Kubernetes & Containerization Optimization
+- **Removed local file cleanup logic** for containerized environments
+  - Deleted `cleanup_old_local_files()` function and all references
+  - emptyDir volumes in Kubernetes automatically handle cleanup on pod restart
+  - Simplified codebase by removing unnecessary file retention logic
+
+- **Migrated from cursor-based to S3-based baseline detection**
+  - Schedule no longer uses cursor for state management
+  - Assets auto-discover baseline by querying S3 `LastModified` metadata
+  - Created `get_last_modified_from_s3()` function using `list_objects_v2()`
+  - Extracts date from S3 partition keys with regex: `load_date=(\d{4}-\d{2}-\d{2})`
+  - Defaults to `2000-01-01T00:00:00` when no S3 objects found (first run)
+  - Removed dependencies on local Parquet files for baseline detection
+
+- **Simplified schedule configuration**
+  - Removed all cursor logic from `bulletin_daily_schedule`
+  - Schedule now just triggers assets every 5 minutes (testing mode)
+  - Assets handle baseline discovery independently
+  - Hardcoded `upload_to_s3=False` and `full_refresh=False` for testing
+
+### User Experience Enhancements
+- **Added field descriptions to RuntimeConfig** for Dagster UI
+  - All config fields now display helpful descriptions in Launchpad
+  - Users see guidance on format and purpose when materializing assets
+  - Migrated from `dagster.Field` to `pydantic.Field` for proper Pydantic Config support
+
+- **Made last_modified_date user-friendly**
+  - Accepts simple `YYYY-MM-DD` format instead of full ISO 8601
+  - Automatically transforms to `YYYY-MM-DDTHH:MM:SS` for API calls
+  - Updated docstrings to reflect new user-friendly format
+  - Applies to both user-provided and S3-discovered dates
+
+### Code Quality & Logging
+- **Standardized logging across utilities**
+  - Made `context` a required parameter in `get_last_modified_from_s3()`
+  - Removed all `print()` statements in favor of `context.log`
+  - Ensures all logs appear in Dagster UI with proper context
+
+- **Improved file size reporting**
+  - Changed S3 upload logs from KB to MB format
+  - Display format: `{size:.2f} MB` instead of `{size:.1f} KB`
+
+### Bug Fixes
+- **Fixed S3-discovered date format inconsistency**
+  - S3-extracted dates now properly transformed to ISO 8601 format
+  - Ensures consistent `YYYY-MM-DDTHH:MM:SS` format across all baseline sources
+  - Prevents potential API filter issues with partial date formats
+
+### Documentation
+- **Created comprehensive behavior matrix** (`BEHAVIOR_MATRIX.md`)
+  - Complete matrix of trigger types and runtime config combinations
+  - Expected behavior for each configuration scenario
+  - Decision logic flow diagrams
+  - Use case examples for testing, production, and manual operations
+  - Added to `.gitignore` and `.dockerignore` as internal reference
+
+- **Enhanced README.md**
+  - Added "Runtime Behavior" section with quick configuration examples
+  - Documented all runtime config parameters with descriptions
+  - Included configuration precedence hierarchy
+  - Added link to `BEHAVIOR_MATRIX.md` for detailed reference
+
 ## [v1.5.0] - 2026-02-05
 ### Code Refactoring & Architecture
 - **Centralized all configuration constants** in `config.json`

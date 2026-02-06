@@ -8,14 +8,10 @@ from de_datalake_bulletin_dataload.defs.resources import ConfigResource, AWSS3Re
 class RuntimeConfig(Config):
     """
     Runtime configuration for assets that fetch data from the BU Bulletin Wordpress API.
-
-    Attributes:
-        upload_to_s3 (bool): Whether to upload the exported Parquet file to S3 after export. Default is False for testing.
-        load_date (Optional[str]): Date string in YYYY-MM-DD format for partitioning in S3. Defaults to current date if not provided.
-        load_time (Optional[str]): Time string in HH:MM:SS format for partitioning in S3. Defaults to current time if not provided.
-        last_modified_date (Optional[str]): Baseline date in YYYY-MM-DD format for incremental loads via API URL path parameter.
-                                            If not provided, the system will auto-discover the most recent load_date partition from S3.
-        full_refresh (bool): If True, bypasses incremental loading logic and fetches all data. Default is False.
+    For incremental loads, the filter date is determined by the following logic:
+    1. If full_refresh=True → return None (fetch all data)
+    2. If last_modified_date is provided → use it
+3. Otherwise → auto-discover from S3 partitions
     """
 
     upload_to_s3: Annotated[
@@ -162,6 +158,11 @@ def determine_filter_date(
     filter_date = get_last_modified_from_s3(
         endpoint_key, aws_s3_config, get_config, context
     )
+    
+    # Transform S3-discovered date to ISO 8601 format if needed
+    if filter_date:
+        filter_date = f"{filter_date}T00:00:00"
+    
     context.log.info(
         f"Incremental load: Auto-discovered baseline from S3 for {endpoint_key}: {filter_date}"
     )
