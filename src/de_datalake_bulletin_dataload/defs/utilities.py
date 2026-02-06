@@ -165,7 +165,7 @@ def cleanup_old_local_files(
     context: AssetExecutionContext = None,
 ) -> None:
     """
-    Remove old local Parquet files, keeping only the N most recent versions per endpoint.
+    Remove old local Parquet files, keeping only the two most recent versions per endpoint.
 
     Only runs after successful S3 upload to ensure data safety. Retains latest versions
     locally for auto-incremental baseline and recovery if S3 is unavailable.
