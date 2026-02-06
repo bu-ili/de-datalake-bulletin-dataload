@@ -7,21 +7,20 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type
+    retry_if_exception_type,
 )
 from typing import Optional
 from de_datalake_bulletin_dataload.defs.resources import (
     ConfigResource,
     ParquetExportResource,
-    AWSS3Resource
+    AWSS3Resource,
 )
 from de_datalake_bulletin_dataload.defs.validators import validate_batch_responses
 from de_datalake_bulletin_dataload.defs.data_exporters import (
     export_to_parquet,
-    export_to_s3
+    export_to_s3,
 )
 from de_datalake_bulletin_dataload.defs.utilities import (
-    cleanup_old_local_files,
     determine_filter_date,
     RuntimeConfig,
 )
@@ -102,13 +101,21 @@ async def fetch_all_pages(
         Exception: If any error occurs during the HTTP request.
     """
     base_url = get_config.get_all_endpoint_urls()[endpoint_key]
-    default_baseline = get_config.get_config_value("default_baseline_datetime", required=True)
+    default_baseline = get_config.get_config_value(
+        "default_baseline_datetime", required=True
+    )
     idempotency_param = get_config.get_config_value("idempotency_param", required=True)
-    loop_pagination_param = get_config.get_config_value("loop_pagination_param", required=True)
+    loop_pagination_param = get_config.get_config_value(
+        "loop_pagination_param", required=True
+    )
 
     if filter_date and filter_date != default_baseline:
-        request_base_url = f"{base_url}{idempotency_param}{filter_date}{loop_pagination_param}"
-        context.log.info(f"Building filtered request URL with modified_after={filter_date}")
+        request_base_url = (
+            f"{base_url}{idempotency_param}{filter_date}{loop_pagination_param}"
+        )
+        context.log.info(
+            f"Building filtered request URL with modified_after={filter_date}"
+        )
     else:
         request_base_url = f"{base_url}{loop_pagination_param}"
         context.log.info("Building unfiltered request URL (fetching all records)")
@@ -120,16 +127,20 @@ async def fetch_all_pages(
         response = await session.get(url=f"{request_base_url}1", headers=headers)
         total_pages = int(response.headers.get("X-WP-TotalPages", 1))
         first_page_data = response.json()
-        
+
         if not isinstance(first_page_data, list):
-            context.log.error(f"Unexpected API response type: {type(first_page_data)}. Expected list, got: {first_page_data}")
+            context.log.error(
+                f"Unexpected API response type: {type(first_page_data)}. Expected list, got: {first_page_data}"
+            )
             return []
 
         context.log.info(f"Total pages to fetch for '{endpoint_key}': {total_pages}")
 
         if total_pages > 1:
             tasks = [
-                fetch_page(session, page_num, total_pages, request_base_url, headers, context)
+                fetch_page(
+                    session, page_num, total_pages, request_base_url, headers, context
+                )
                 for page_num in range(2, total_pages + 1)
             ]
             remaining_pages = await asyncio.gather(*tasks, return_exceptions=False)
@@ -139,10 +150,12 @@ async def fetch_all_pages(
             )
         else:
             all_data = first_page_data
-        
+
         for idx, item in enumerate(all_data):
             if not isinstance(item, dict):
-                context.log.error(f"Item {idx} is not a dict: type={type(item)}, value={item}")
+                context.log.error(
+                    f"Item {idx} is not a dict: type={type(item)}, value={item}"
+                )
                 return []
 
         return all_data
@@ -188,7 +201,7 @@ async def fetch_export_pages_data(
 
     # Determine filter date for incremental loading
     filter_date = determine_filter_date(
-        endpoint_key, config, parquet_export_path, get_config, context
+        endpoint_key, config, aws_s3_config, get_config, context
     )
 
     data = await fetch_all_pages(get_config, endpoint_key, context, filter_date)
@@ -219,15 +232,7 @@ async def fetch_export_pages_data(
             aws_s3_config=aws_s3_config, file_path=export_path, context=context
         )
         context.log.info(f"Uploaded pages data to S3: {aws_s3_path}")
-        
-        # Cleanup old local files after successful S3 upload
-        cleanup_old_local_files(
-            current_file_path=export_path,
-            get_config=config,
-            keep_versions=2,
-            context=context,
-        )
-        
+
         result_path = aws_s3_path
     else:
         context.log.info("Skipping S3 upload for pages as per configuration")
@@ -281,7 +286,7 @@ async def fetch_export_media_data(
 
     # Determine filter date for incremental loading
     filter_date = determine_filter_date(
-        endpoint_key, config, parquet_export_path, get_config, context
+        endpoint_key, config, aws_s3_config, get_config, context
     )
 
     data = await fetch_all_pages(get_config, endpoint_key, context, filter_date)
@@ -312,15 +317,7 @@ async def fetch_export_media_data(
             aws_s3_config=aws_s3_config, file_path=export_path, context=context
         )
         context.log.info(f"Uploaded media data to S3: {aws_s3_path}")
-        
-        # Cleanup old local files after successful S3 upload
-        cleanup_old_local_files(
-            current_file_path=export_path,
-            get_config=config,
-            keep_versions=2,
-            context=context,
-        )
-        
+
         result_path = aws_s3_path
     else:
         context.log.info("Skipping S3 upload for media as per configuration")

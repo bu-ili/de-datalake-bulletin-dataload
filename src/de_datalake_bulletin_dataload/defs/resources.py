@@ -107,7 +107,9 @@ class ConfigResource(ConfigurableResource):
             Dict[str, str]: Mapping of endpoint keys to full URLs with pagination.
         """
         endpoints = self.get_config_value("endpoints", default={}, required=True)
-        pagination_param = self.get_config_value("loop_pagination_param", default="", required=True)
+        pagination_param = self.get_config_value(
+            "loop_pagination_param", default="", required=True
+        )
         base_url = self.get_config_value("base_url", default="", required=True)
         return {
             key: f"{base_url}{path}{pagination_param}"
@@ -116,24 +118,24 @@ class ConfigResource(ConfigurableResource):
 
     def get_config_value(self, key: str, default=None, required=False):
         """Get a value from config by key.
-        
+
         Args:
             key (str): The config key to retrieve.
             default: Default value if key not found (only used if required=False).
             required (bool): If True, raises ValueError when key is missing or empty.
-            
+
         Returns:
             The config value.
-            
+
         Raises:
             ValueError: If required=True and key is missing or value is empty.
         """
         config = self.load_config()
         value = config.get(key, default)
-        
+
         if required and not value:
             raise ValueError(f"'{key}' is missing or empty in config file")
-        
+
         return value
 
 

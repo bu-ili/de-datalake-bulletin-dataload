@@ -1,11 +1,8 @@
-import httpx
-import glob
-import shutil
-import polars as pl
-from pathlib import Path
-from typing import Optional
+import re
+from typing import Optional, Annotated
+from pydantic import Field
 from dagster import AssetExecutionContext, Config
-from de_datalake_bulletin_dataload.defs.resources import ConfigResource, ParquetExportResource
+from de_datalake_bulletin_dataload.defs.resources import ConfigResource, AWSS3Resource
 
 
 class RuntimeConfig(Config):
@@ -13,110 +10,117 @@ class RuntimeConfig(Config):
     Runtime configuration for assets that fetch data from the BU Bulletin Wordpress API.
 
     Attributes:
-        upload_to_s3 (bool): Flag to enable/disable S3 upload. Default is False for testing.
-        load_date (str): Date string for partitioning (YYYY-MM-DD). Defaults to current date.
-        load_time (str): Time string for partitioning (HH:MM:SS). Defaults to current time.
-        last_modified_date (str): ISO 8601 datetime string for filtering records modified after this date.
-                                  Enables incremental loads. If None, fetches all data (full refresh).
-        full_refresh (bool): When True, bypasses incremental logic and fetches all data regardless
-                           of last_modified_date. Default is False.
+        upload_to_s3 (bool): Whether to upload the exported Parquet file to S3 after export. Default is False for testing.
+        load_date (Optional[str]): Date string in YYYY-MM-DD format for partitioning in S3. Defaults to current date if not provided.
+        load_time (Optional[str]): Time string in HH:MM:SS format for partitioning in S3. Defaults to current time if not provided.
+        last_modified_date (Optional[str]): Baseline date in YYYY-MM-DD format for incremental loads via API URL path parameter.
+                                            If not provided, the system will auto-discover the most recent load_date partition from S3.
+        full_refresh (bool): If True, bypasses incremental loading logic and fetches all data. Default is False.
     """
 
-    upload_to_s3: bool = False
-    load_date: Optional[str] = None
-    load_time: Optional[str] = None
-    last_modified_date: Optional[str] = None
-    full_refresh: bool = False
+    upload_to_s3: Annotated[
+        bool,
+        Field(
+            description="Enable S3 upload after exporting to local Parquet (default: False for testing)"
+        ),
+    ] = False
 
-def fetch_latest_modified_date(endpoint: str, get_config: ConfigResource) -> str:
-    """Fetch the most recent modified date from Bulletin Wordpress API for an endpoint.
+    load_date: Annotated[
+        Optional[str],
+        Field(
+            description="Date for partitioning in YYYY-MM-DD format (default: current date)"
+        ),
+    ] = None
 
-    The sensor parameter defines the query to get the latest modified record. The response
-    is compared against the last known modified date stored in the schedule cursor.
+    load_time: Annotated[
+        Optional[str],
+        Field(
+            description="Time for partitioning in HH:MM:SS format (default: current time)"
+        ),
+    ] = None
 
-    Args:
-        endpoint (str): API endpoint to query (e.g., 'pages', 'media').
-        get_config (ConfigResource): ConfigResource for getting parameter to build URL for finding latest modified record for each API endpoint.
+    last_modified_date: Annotated[
+        Optional[str],
+        Field(
+            description="Baseline date in YYYY-MM-DD format for incremental loads (default: auto-discover from S3)"
+        ),
+    ] = None
 
-    Returns:
-        str: Datetime string of the latest modified date, or default baseline if fetch fails.
-    """
-    base_url = get_config.get_config_value("base_url", required=True)
-    latest_modified_param = get_config.get_config_value("latest_modified_param", required=True)
-    url = f"{base_url}{endpoint}{latest_modified_param}"
-    
-    default_baseline = get_config.get_config_value("default_baseline_datetime")
+    full_refresh: Annotated[
+        bool,
+        Field(
+            description="Bypass incremental logic and fetch all data (default: False)"
+        ),
+    ] = False
 
-    try:
-        response = httpx.get(url, timeout=30.0)
-        response.raise_for_status()
-        data = response.json()
 
-        if data and len(data) > 0:
-            return data[0]["modified"]
-    except Exception as e:
-        print(f"Error fetching latest modified date for {endpoint}: {e}")
-
-    return default_baseline
-
-def get_last_modified_from_parquet(
-    endpoint: str, export_folder_path: str, get_config: ConfigResource
+def get_last_modified_from_s3(
+    endpoint: str,
+    aws_s3_config: AWSS3Resource,
+    get_config: ConfigResource,
+    context: AssetExecutionContext,
 ) -> str:
-    """Read the most recent modified timestamp from existing local Parquet files.
+    """Query S3 to find the most recent load_date partition for an endpoint.
 
-    Reads from local Parquet files to establish baseline for incremental loads.
-    Builds a glob pattern to find Parquet files for the given endpoint, reads the most recent Parquet file using polars,
-    and extracts the maximum 'modified' timestamp if file is available.
+    Lists objects in bulletin_raw/{endpoint}/ and finds the most recently uploaded file
+    based on S3's LastModified timestamp. Extracts the load_date partition from the key.
 
     Args:
-        endpoint (str): API endpoint to query (e.g., 'pages', 'media').
-        export_folder_path (str): Base path where Parquet files are exported.
+        endpoint (str): API endpoint key (e.g., 'pages', 'media').
+        aws_s3_config (AWSS3Resource): S3 resource for accessing bucket.
         get_config (ConfigResource): ConfigResource for getting configuration constants.
+        context (AssetExecutionContext): For logging.
 
     Returns:
-        str: Datetime string of the latest modified date, or default baseline if no files found.
+        str: Date string (YYYY-MM-DD) from the most recent partition, or default baseline if no files found.
     """
-    default_baseline = get_config.get_config_value("default_baseline_datetime", "2000-01-01T00:00:00")
-    partition_date_prefix = get_config.get_config_value("partition_date_prefix", "load_date=")
-    partition_time_prefix = get_config.get_config_value("partition_time_prefix", "load_time=")
-    parquet_extension = get_config.get_config_value("parquet_file_extension", "*.parquet")
+    default_baseline = get_config.get_config_value("default_baseline_datetime")
+    partition_date_prefix = get_config.get_config_value("partition_date_prefix")
 
     try:
-        # Build glob pattern for endpoint parquet files
-        # Remove trailing slash and bulletin_raw duplication
-        base_path = export_folder_path.rstrip('/')
-        pattern = f"{base_path}/{endpoint}/{partition_date_prefix}*/{partition_time_prefix}*/{parquet_extension}"
+        s3_client = aws_s3_config.get_s3_client()
+        bucket = aws_s3_config.bucket_name
+        prefix = f"bulletin_raw/{endpoint}/"
 
-        # Find all matching files, sorted by path (newest first due to timestamp format)
-        files = sorted(glob.glob(pattern), reverse=True)
+        context.log.info(
+            f"Querying S3 for most recent partition in s3://{bucket}/{prefix}"
+        )
 
-        if not files:
-            print(
-                f"No existing Parquet files found for {endpoint}, using default baseline"
+        response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
+
+        if "Contents" not in response or not response["Contents"]:
+            context.log.info(
+                f"No S3 objects found for {endpoint}, using default baseline"
             )
             return default_baseline
 
-        # Read most recent file and get max modified timestamp
-        df = pl.read_parquet(files[0])
+        # Get most recently modified object
+        most_recent = max(response["Contents"], key=lambda x: x["LastModified"])
+        key = most_recent["Key"]
 
-        if "payload" in df.columns and len(df) > 0:
-            # Extract 'modified' field from JSON payload column
-            max_modified = df.select(
-                pl.col("payload").str.json_path_match("$.modified").alias("modified")
-            ).select(pl.col("modified").max()).item()
-            print(f"Found baseline for {endpoint}: {max_modified} (from {files[0]})")
-            return max_modified
+        # Extract load_date from key: bulletin_raw/pages/load_date=2024-01-15/load_time=.../file.parquet
+        pattern = rf"{partition_date_prefix}(\d{{4}}-\d{{2}}-\d{{2}})"
+        match = re.search(pattern, key)
+
+        if match:
+            baseline_date = match.group(1)
+            context.log.info(
+                f"Found baseline for {endpoint}: {baseline_date} (from {key})"
+            )
+            return baseline_date
+        else:
+            context.log.warning(f"Could not extract date from S3 partition: {key}")
+            return default_baseline
 
     except Exception as e:
-        print(f"Error reading Parquet for {endpoint}: {e}")
-
-    return default_baseline
+        context.log.error(f"Error querying S3 for {endpoint}: {e}")
+        return default_baseline
 
 
 def determine_filter_date(
     endpoint_key: str,
     config: RuntimeConfig,
-    parquet_export_path: ParquetExportResource,
+    aws_s3_config: AWSS3Resource,
     get_config: ConfigResource,
     context: AssetExecutionContext,
 ) -> Optional[str]:
@@ -126,122 +130,39 @@ def determine_filter_date(
     Decision logic:
     1. If full_refresh=True → return None (fetch all data)
     2. If last_modified_date is provided → use it
-    3. Otherwise → auto-discover from existing Parquet files
+    3. Otherwise → auto-discover from S3 partitions
 
     Args:
         endpoint_key (str): API endpoint key (e.g., 'pages', 'media').
         config (RuntimeConfig): Runtime configuration with full_refresh and last_modified_date.
-        parquet_export_path (ParquetExportResource): Resource for Parquet export path.
+        aws_s3_config (AWSS3Resource): S3 resource for querying buckets.
         get_config (ConfigResource): ConfigResource for getting configuration constants.
         context (AssetExecutionContext): For logging.
 
     Returns:
-        Optional[str]: ISO 8601 datetime string to filter by, or None for full refresh.
+        Optional[str]: Date string (YYYY-MM-DD) to filter by, or None for full refresh.
     """
     if config.full_refresh:
-        context.log.info(f"Full refresh: Fetching all {endpoint_key} data (full_refresh=True)")
-        return None
-    
-    if config.last_modified_date:
         context.log.info(
-            f"Incremental load: Using provided date {config.last_modified_date} for {endpoint_key}"
+            f"Full refresh: Fetching all {endpoint_key} data (full_refresh=True)"
         )
-        return config.last_modified_date
-    
-    # Auto-discover from Parquet files
-    filter_date = get_last_modified_from_parquet(
-        endpoint_key, parquet_export_path.export_folder_path, get_config
+        return None
+
+    if config.last_modified_date:
+        # Transform YYYY-MM-DD to ISO 8601 datetime format (YYYY-MM-DDTHH:MM:SS)
+        date_str = config.last_modified_date
+        if "T" not in date_str:  # If not already ISO 8601 format
+            date_str = f"{date_str}T00:00:00"
+        context.log.info(
+            f"Incremental load: Using provided date {date_str} for {endpoint_key}"
+        )
+        return date_str
+
+    # Auto-discover from S3 partitions
+    filter_date = get_last_modified_from_s3(
+        endpoint_key, aws_s3_config, get_config, context
     )
     context.log.info(
-        f"Incremental load: Auto-discovered baseline from local Parquet for {endpoint_key}: {filter_date}"
+        f"Incremental load: Auto-discovered baseline from S3 for {endpoint_key}: {filter_date}"
     )
     return filter_date
-
-
-def cleanup_old_local_files(
-    current_file_path: str,
-    get_config: ConfigResource,
-    keep_versions: int = 2,
-    context: AssetExecutionContext = None,
-) -> None:
-    """
-    Remove old local Parquet files, keeping only the two most recent versions per endpoint.
-
-    Only runs after successful S3 upload to ensure data safety. Retains latest versions
-    locally for auto-incremental baseline and recovery if S3 is unavailable.
-
-    Args:
-        current_file_path (str): Path to the file that was just uploaded.
-        get_config (ConfigResource): ConfigResource for getting config values.
-        keep_versions (int): Number of recent versions to retain locally (default: 2).
-        context (AssetExecutionContext): For logging (optional).
-    """
-    partition_date_prefix = get_config.get_config_value("partition_date_prefix", required=True)
-    partition_time_prefix = get_config.get_config_value("partition_time_prefix", required=True)
-
-    try:
-        # Extract endpoint from path: bulletin_raw/{endpoint}/load_date=.../load_time=.../file.parquet
-        path_parts = Path(current_file_path).parts
-
-        # Find bulletin_raw index
-        if "bulletin_raw" not in path_parts:
-            return
-
-        bulletin_idx = path_parts.index("bulletin_raw")
-        if bulletin_idx + 1 >= len(path_parts):
-            return
-
-        endpoint = path_parts[bulletin_idx + 1]
-
-        # Build base path for this endpoint
-        base_path = str(Path(current_file_path).parents[0])
-        while partition_time_prefix in base_path:
-            base_path = str(Path(base_path).parent)
-        while partition_date_prefix in base_path:
-            base_path = str(Path(base_path).parent)
-
-        # Find all load_date/load_time directories for this endpoint
-        pattern = f"{base_path}/{partition_date_prefix}*/{partition_time_prefix}*"
-        dirs = sorted(glob.glob(pattern), reverse=True)  # Newest first
-
-        if len(dirs) <= keep_versions:
-            if context:
-                context.log.info(
-                    f"Retention: {len(dirs)} version(s) found, keeping all (limit: {keep_versions})"
-                )
-            return
-
-        # Delete older load_time directories
-        deleted_count = 0
-        for old_dir in dirs[keep_versions:]:
-            shutil.rmtree(old_dir)
-            deleted_count += 1
-            if context:
-                context.log.info(f"Cleaned up old local version: {old_dir}")
-
-        # Clean up empty load_date parent directories
-        date_pattern = f"{base_path}/{partition_date_prefix}*"
-        date_dirs = glob.glob(date_pattern)
-        
-        for date_dir in date_dirs:
-            # Check if directory is empty or only contains empty subdirectories
-            try:
-                if not any(Path(date_dir).iterdir()):
-                    # Directory is completely empty
-                    shutil.rmtree(date_dir)
-                    if context:
-                        context.log.info(f"Removed empty date directory: {date_dir}")
-            except (OSError, StopIteration):
-                pass
-
-        if context:
-            context.log.info(
-                f"Local retention policy applied: Kept {keep_versions} latest versions, "
-                f"removed {deleted_count} old version(s) for endpoint '{endpoint}'"
-            )
-
-    except Exception as e:
-        if context:
-            context.log.warning(f"Failed to cleanup old local files: {e}")
-        else:
-            print(f"Warning: Failed to cleanup old local files: {e}")

@@ -5,7 +5,7 @@ import json
 import polars as pl
 from de_datalake_bulletin_dataload.defs.resources import (
     ParquetExportResource,
-    AWSS3Resource
+    AWSS3Resource,
 )
 
 
@@ -99,7 +99,7 @@ def export_to_s3(
 
     try:
         file_size = os.path.getsize(file_path)
-        context.log.info(f"Uploading {file_path} ({file_size / 1024:.1f} KB) to S3...")
+        context.log.info(f"Uploading {file_path} ({file_size / (1024 * 1024):.2f} MB) to S3...")
 
         s3_client.upload_file(file_path, bucket_name, s3_key)
 

@@ -1,16 +1,13 @@
 from dagster import (
     schedule,
     RunRequest,
-    SkipReason,
     ScheduleEvaluationContext,
     define_asset_job,
 )
-from de_datalake_bulletin_dataload.defs.resources import ConfigResource
 from de_datalake_bulletin_dataload.defs.assets import (
     fetch_export_pages_data,
     fetch_export_media_data,
 )
-from de_datalake_bulletin_dataload.defs.utilities import fetch_latest_modified_date
 
 
 bulletin_raw_job = define_asset_job(
@@ -22,10 +19,10 @@ bulletin_raw_job = define_asset_job(
 
 
 @schedule(
-    cron_schedule="*/3 * * * *",
+    cron_schedule="*/5 * * * *",  # Every 5 minutes (for testing)
     job=bulletin_raw_job,
     name="bulletin_daily_schedule",
-    description="Daily schedule to check for new or modified content in Bulletin API and trigger incremental loads.",
+    description="Schedule to trigger incremental loads for Bulletin data. Assets auto-discover baseline from S3.",
     tags={
         "dagster-k8s/config": {
             "container_config": {
@@ -39,67 +36,37 @@ bulletin_raw_job = define_asset_job(
         },
     },
 )
-def bulletin_daily_schedule(context: ScheduleEvaluationContext, get_config: ConfigResource):
-    """Daily schedule to check for new or modified content in Bulletin API and trigger incremental loads.
+def bulletin_daily_schedule(context: ScheduleEvaluationContext):
+    """Trigger bulletin asset materialization with incremental loading.
 
-    Uses cursor to store last known modified dates for both pages and media endpoints
-    in the format 'pages_modified|media_modified'. Runs every 3 minutes for testing.
-
-    Implements idempotent incremental loads by passing last_modified_date to assets,
-    which filter API queries to only fetch records modified since the last run.
+    Assets auto-discover baseline from S3 by querying the most recent load_date partition.
+    Runs every 3 minutes for testing (change to daily in production).
 
     Args:
-        context (ScheduleEvaluationContext): Dagster ScheduleEvaluationContext for resources and logging.
+        context (ScheduleEvaluationContext): Dagster ScheduleEvaluationContext for logging.
 
     Returns:
-        RunRequest: If new data is detected, triggers asset materialization with incremental config and updated cursor.
-        SkipReason: If no new data is detected, skips the run with a reason.
+        RunRequest: Triggers asset materialization with incremental config.
     """
-    default_baseline = get_config.get_config_value("default_baseline_datetime")
-    cursor = context.cursor or f"{default_baseline}|{default_baseline}"
-    last_pages_modified, last_media_modified = cursor.split("|")
+    context.log.info("Triggering bulletin asset materialization (incremental mode)")
 
-    latest_pages = fetch_latest_modified_date("pages", get_config)
-    latest_media = fetch_latest_modified_date("media", get_config)
-
-    context.log.info(
-        f"Last known - Pages: {last_pages_modified}, Media: {last_media_modified}"
-    )
-    context.log.info(f"Current latest - Pages: {latest_pages}, Media: {latest_media}")
-
-    has_new_data = (latest_pages > last_pages_modified) or (
-        latest_media > last_media_modified
-    )
-
-    if has_new_data:
-        context.log.info(
-            "New data detected! Triggering incremental asset materialization."
-        )
-        context.update_cursor(f"{latest_pages}|{latest_media}")
-
-        return RunRequest(
-            run_key=f"{latest_pages}_{latest_media}",
-            run_config={
-                "ops": {
-                    "bulletin_raw_pages": {
-                        "config": {
-                            "upload_to_s3": True,
-                            "last_modified_date": last_pages_modified,
-                            "full_refresh": False,
-                        }
-                    },
-                    "bulletin_raw_media": {
-                        "config": {
-                            "upload_to_s3": True,
-                            "last_modified_date": last_media_modified,
-                            "full_refresh": False,
-                        }
-                    },
-                }
-            },
-        )
-
-    context.log.info("No new data detected. Skipping run.")
-    return SkipReason(
-        f"No new data. Latest - Pages: {latest_pages}, Media: {latest_media}"
+    return RunRequest(
+        run_key=context.scheduled_execution_time.isoformat(),
+        run_config={
+            "ops": {
+                "bulletin_raw_pages": {
+                    "config": {
+                        "upload_to_s3": False,
+                        "full_refresh": False,
+                    }
+                },
+                "bulletin_raw_media": {
+                    "config": {
+                        "upload_to_s3": False,
+                        "full_refresh": False,
+                    }
+                },
+            }
+        },
+        tags={"source": "bulletin_daily_schedule"},
     )

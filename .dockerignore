@@ -60,6 +60,7 @@ htmlcov/
 # Documentation
 *.md
 !README.md
+BEHAVIOR_MATRIX.md
 docs/
 
 # Misc

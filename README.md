@@ -207,13 +207,61 @@ ops:
     config:
       upload_to_s3: true
       full_refresh: false  # Incremental load (default)
-      last_modified_date: "2026-01-28T10:00:00"  # Optional: override schedule cursor
+      last_modified_date: "2024-01-15"  # YYYY-MM-DD format, auto-converts to ISO 8601
 ```
 
+## Runtime Behavior
+
+The pipeline supports three execution modes with configurable baseline detection:
+
+- **Scheduled incremental loads**: Auto-discovers baseline from S3 partitions (default)
+- **Manual materialization**: Override config for testing, backfills, or full refreshes
+- **First run (cold start)**: Defaults to historical baseline when S3 is empty
+
+For the complete behavior matrix including all configuration combinations, see **[BEHAVIOR_MATRIX.md](BEHAVIOR_MATRIX.md)**.
+
+### Quick Configuration Examples
+
+**Standard Incremental Load (Default)**
+```yaml
+config:
+  upload_to_s3: true
+  full_refresh: false
+# Auto-discovers baseline from S3, fetches only modified records
+```
+
+**Full Refresh (Fetch All Data)**
+```yaml
+config:
+  full_refresh: true
+  upload_to_s3: true
+# Ignores baseline, fetches complete dataset from WordPress API
+```
+
+**Backfill from Specific Date**
+```yaml
+config:
+  last_modified_date: "2024-01-15"
+  upload_to_s3: true
+# Fetches records modified since 2024-01-15, skips S3 auto-discovery
+```
+
+### Runtime Config Parameters
+
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `upload_to_s3` | `bool` | Enable S3 upload after local Parquet export | `False` |
+| `full_refresh` | `bool` | Bypass incremental logic and fetch all data | `False` |
+| `last_modified_date` | `str` | Custom baseline date in YYYY-MM-DD format | `None` (auto-discover from S3) |
+| `load_date` | `str` | Override partition date (YYYY-MM-DD) | Current date |
+| `load_time` | `str` | Override partition time (HH:MM:SS) | Current time |
+
+**Configuration Precedence**: `full_refresh` > `last_modified_date` > S3 auto-discovery > default baseline
+
 **Incremental Load Parameters:**
-- `last_modified_date`: ISO 8601 datetime string. When provided, only fetches records modified after this date.
+- `last_modified_date`: User-friendly YYYY-MM-DD format, automatically converted to ISO 8601 datetime
 - `full_refresh`: Set to `true` to bypass incremental logic and fetch all data. Default is `false`.
-- If both are omitted, the schedule automatically provides `last_modified_date` from cursor.
+- If both are omitted, the schedule automatically discovers baseline from S3 partitions
 
 #### Schedule Monitoring
 The `bulletin_daily_schedule` automatically runs daily and monitors the WordPress API for content changes:
