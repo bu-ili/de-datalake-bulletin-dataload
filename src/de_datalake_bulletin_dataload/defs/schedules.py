@@ -19,7 +19,7 @@ bulletin_raw_job = define_asset_job(
 
 
 @schedule(
-    cron_schedule="*/5 * * * *",  # Every 5 minutes (for testing)
+    cron_schedule="*/10 * * * *",  # Every 10 minutes (for testing)
     job=bulletin_raw_job,
     name="bulletin_daily_schedule",
     description="Schedule to trigger incremental loads for Bulletin data. Assets auto-discover baseline from S3.",
