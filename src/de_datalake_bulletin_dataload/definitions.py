@@ -15,7 +15,7 @@ from de_datalake_bulletin_dataload.defs.schedules import (
 
 # Initialize config resource first - reads from CONFIG_PATH env var or defaults to /app/config/config.json
 config_resource = ConfigResource(
-    config_path="/app/config/config.json"
+    config_path="app/config/config.json"
 )
 
 defs = Definitions(
