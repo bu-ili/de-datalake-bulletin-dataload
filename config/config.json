@@ -9,6 +9,8 @@
     "default_baseline_datetime": "2000-01-01T00:00:00",
     "latest_modified_param": "?per_page=1&page=1&_fields=modified&orderby=modified&order=desc",
     "idempotency_param": "&modified_after=",
+    "parquet_top_folder_path": "/bulletin_raw/",
+    "parquet_file_name_prefix": "de_bulletin_data",
     "partition_date_prefix": "load_date=",
     "partition_time_prefix": "load_time=",
     "parquet_file_extension": "*.parquet",
@@ -18,5 +20,15 @@
         "connect_timeout": 10.0,
         "total_timeout": 30.0,
         "http2": true
+    },
+    "paths": {
+        "config_path": "/app/config/config.json",
+        "parquet_export_folder_path": "/bulletin_raw/",
+        "parquet_file_name": "de_bulletin_data.parquet",
+        "parquet_compression": "SNAPPY"
+    },
+    "aws": {
+        "s3_bucket_name": "buaws-datalake-nonprod-s3",
+        "region_name": "us-east-1"
     }
 }

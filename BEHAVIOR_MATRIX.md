@@ -85,14 +85,13 @@ determine_filter_date(endpoint, config, aws_s3_config, get_config, context):
 
 ### For Testing/Development
 - Use schedule as-is: `upload_to_s3=False`, `full_refresh=False`
-- S3 auto-discovery will fall back to `2000-01-01T00:00:00` on first run
-- Subsequent runs use local S3 bucket partitions for baseline
+- S3 auto-discovery will use bucket partitions for baseline filter date value
+- Frequency of schedule each 10 minutes allows for run checks and monitoring of 
 
 ### For Production
-1. Change schedule to daily: `cron_schedule="0 10 * * *"`
-2. Enable S3 upload: `upload_to_s3=True` in schedule config
-3. First run will populate S3 with historical data
-4. Subsequent runs incrementally append only modified records
+1. Enable S3 upload: `upload_to_s3=True` in schedule config
+1. First run will populate S3 with historical data
+1. Subsequent runs incrementally append only modified records
 
 ### For Manual Operations
 - **Data Quality Check**: Set `full_refresh=True` to validate complete dataset

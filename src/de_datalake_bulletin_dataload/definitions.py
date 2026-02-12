@@ -13,21 +13,27 @@ from de_datalake_bulletin_dataload.defs.schedules import (
     bulletin_raw_job,
 )
 
+# Initialize config resource first - reads from CONFIG_PATH env var or defaults to /app/config/config.json
+config_resource = ConfigResource(
+    config_path="/app/config/config.json"
+)
+
 defs = Definitions(
     assets=[fetch_export_pages_data, fetch_export_media_data],
     schedules=[bulletin_daily_schedule],
     jobs=[bulletin_raw_job],
     resources={
-        "get_config": ConfigResource(config_path=EnvVar("CONFIG_PATH")),
+        "get_config": config_resource,
         "parquet_export_path": ParquetExportResource(
-            export_folder_path=EnvVar("PARQUET_EXPORT_FOLDER_PATH"),
-            parquet_file_name=EnvVar("PARQUET_EXPORT_FILE_NAME"),
+            config_resource=config_resource,
+            # All values read from config.json by default
         ),
         "aws_s3_config": AWSS3Resource(
-            bucket_name=EnvVar("AWS_S3_BUCKET_NAME"),
+            config_resource=config_resource,
+            # Credentials from environment variables (required)
             access_key_id=EnvVar("AWS_ACCESS_KEY_ID"),
             secret_access_key=EnvVar("AWS_SECRET_ACCESS_KEY"),
-            region_name=EnvVar("AWS_REGION_NAME"),
+            # Bucket name and region read from config.json by default
         ),
     },
 )

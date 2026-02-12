@@ -93,7 +93,7 @@ def export_to_s3(
         Exception: If any error occurs during the upload process.
     """
     s3_client = aws_s3_config.get_s3_client()
-    bucket_name = aws_s3_config.bucket_name
+    bucket_name = aws_s3_config._get_bucket_name()
 
     s3_key = file_path.replace("\\", "/").lstrip("./")
 

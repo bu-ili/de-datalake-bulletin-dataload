@@ -55,52 +55,34 @@ uv sync --frozen
 
 ## Configuration
 
-### Environment Variables (.env)
-This project uses environment variables for runtime configuration and secrets management.  
-For **local development**, use a `.env` file in the project root.  
-For **production deployments**, use Kubernetes Secrets.
+### Primary Configuration File (config.json)
+All application configuration is centralized in [`config/config.json`](config/config.json). This includes API endpoints, paths, AWS settings, and database configuration.
 
-#### Core Configuration
+#### Core Settings
 ```env
-USER_AGENT="your-project-name-version"
-CONFIG_PATH="/app/config/config.json"
+CONFIG_PATH="/app/config/config.json"  # Optional - defaults to /app/config/config.json
 ```
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `USER_AGENT` | User agent string for HTTP requests | Yes |
-| `CONFIG_PATH` | Path to config.json file (contains base_url) | Yes |
+| `CONFIG_PATH` | Path to config.json file | No (defaults to /app/config/config.json) |
 
-#### Parquet Export Configuration
+#### AWS Credentials (Environment Variables)
+AWS credentials are kept as environment variables for security:
 ```env
-PARQUET_EXPORT_FOLDER_PATH="./data/parquet/"
-PARQUET_EXPORT_FILE_NAME="endpoint_export_data.parquet"
-```
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `PARQUET_EXPORT_FOLDER_PATH` | Base directory for Parquet file exports | Yes |
-| `PARQUET_EXPORT_FILE_NAME` | Filename for Parquet exports | Yes |
-
-#### AWS S3 Configuration (Optional)
-```env
-AWS_S3_BUCKET_NAME="your-bucket-name"
 AWS_ACCESS_KEY_ID="your-access-key"
 AWS_SECRET_ACCESS_KEY="your-secret-key"
-AWS_REGION_NAME="region-name"
 ```
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `AWS_S3_BUCKET_NAME` | S3 bucket name for data uploads | Only if `upload_to_s3=true` |
 | `AWS_ACCESS_KEY_ID` | AWS access key | Only if `upload_to_s3=true` |
 | `AWS_SECRET_ACCESS_KEY` | AWS secret key | Only if `upload_to_s3=true` |
-| `AWS_REGION_NAME` | AWS region (e.g., us-east-1) | Only if `upload_to_s3=true` |
 
-**Note**: S3 upload is controlled by the `upload_to_s3` runtime flag in asset materialization config.
+**Note**: All other AWS settings (bucket name, region) are configured in config.json.
 
 ### API Configuration (config.json)
-The [`config/config.json`](config/config.json) file defines WordPress API endpoint behavior and all path-related constants. This centralized configuration approach eliminates hardcoded values and allows you to modify behavior without changing code.
+The [`config/config.json`](config/config.json) file defines all application behavior including WordPress API endpoints, file paths, AWS settings, and database configuration. This centralized approach eliminates hardcoded values and allows you to modify behavior without changing code.
 
 **Example configuration:**
 ```json
@@ -124,6 +106,23 @@ The [`config/config.json`](config/config.json) file defines WordPress API endpoi
         "connect_timeout": 10.0,
         "total_timeout": 30.0,
         "http2": true
+    },
+    "paths": {
+        "config_path": "/app/config/config.json",
+        "parquet_export_folder_path": "/bulletin_raw/",
+        "parquet_file_name": "de_bulletin_data.parquet",
+        "parquet_compression": "SNAPPY"
+    },
+    "aws": {
+        "s3_bucket_name": "your-bucket-name",
+        "region_name": "us-east-1"
+    },
+    "postgres": {
+        "host": "localhost",
+        "port": 5432,
+        "user": "de_bulletin_dataload",
+        "password": "your-password",
+        "database": "de_datalake_bulletin_data"
     }
 }
 ```
@@ -141,6 +140,9 @@ The [`config/config.json`](config/config.json) file defines WordPress API endpoi
 | `partition_time_prefix` | Prefix for time partition folders | Used in path: `{prefix}HH:MM:SS` |
 | `parquet_file_extension` | Glob pattern for Parquet files | Used to find existing files |
 | `http_client` | HTTP client configuration settings | Controls connection pooling, timeouts, and HTTP protocol version |
+| `paths` | Path configuration for exports and files | Parquet export paths and filenames |
+| `aws` | AWS S3 configuration | Bucket name and region (credentials via env vars) |
+| `postgres` | PostgreSQL database configuration | Connection details for database |
 
 **HTTP Client Settings:**
 
@@ -180,8 +182,12 @@ Simply add a new key-value pair to the `endpoints` object, create corresponding 
    ```bash
    uv sync --frozen
    ```
-3. (Optional) Create a `.env` file in the project root for AWS credentials if using S3 upload
-4. Configure endpoints in [`config/fetch_config.json`](config/fetch_config.json)
+3. Configure your settings in [`config/config.json`](config/config.json)
+4. (Optional) Create a `.env` file in the project root with AWS credentials if using S3 upload:
+   ```env
+   AWS_ACCESS_KEY_ID=your-access-key
+   AWS_SECRET_ACCESS_KEY=your-secret-key
+   ```
 
 ### Running the Pipeline
 

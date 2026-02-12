@@ -4,7 +4,7 @@ import boto3
 import json
 import httpx
 import importlib.metadata
-from typing import Dict
+from typing import Dict, Optional
 
 
 class ConfigResource(ConfigurableResource):
@@ -142,16 +142,43 @@ class ConfigResource(ConfigurableResource):
 class ParquetExportResource(ConfigurableResource):
     """
     Resource for managing Parquet export file location and settings.
+    Values can be provided directly or will be read from ConfigResource.
 
     Attributes:
-        export_folder_path (str): Base folder path for exporting Parquet files.
-        parquet_file_name (str): Base name for Parquet files.
-        compression (str): Compression type for Parquet files (default: SNAPPY).
+        config_resource (ConfigResource): Config resource for reading default values.
+        export_folder_path (Optional[str]): Base folder path for exporting Parquet files.
+        parquet_file_name (Optional[str]): Base name for Parquet files.
+        compression (Optional[str]): Compression type for Parquet files (default: from config or SNAPPY).
     """
 
-    export_folder_path: str
-    parquet_file_name: str
-    compression: str = "SNAPPY"
+    config_resource: ConfigResource
+    export_folder_path: Optional[str] = None
+    parquet_file_name: Optional[str] = None
+    compression: Optional[str] = None
+
+    def _get_export_folder_path(self) -> str:
+        """Get export folder path from attribute or config."""
+        if self.export_folder_path:
+            return self.export_folder_path
+        return self.config_resource.get_config_value(
+            "paths", default={}, required=True
+        ).get("parquet_export_folder_path", "/bulletin_raw/")
+
+    def _get_parquet_file_name(self) -> str:
+        """Get parquet file name from attribute or config."""
+        if self.parquet_file_name:
+            return self.parquet_file_name
+        return self.config_resource.get_config_value(
+            "paths", default={}, required=True
+        ).get("parquet_file_name", "de_bulletin_data.parquet")
+
+    def _get_compression(self) -> str:
+        """Get compression type from attribute or config."""
+        if self.compression:
+            return self.compression
+        return self.config_resource.get_config_value(
+            "paths", default={}, required=True
+        ).get("parquet_compression", "SNAPPY")
 
     def get_export_path(self, endpoint_key: str, load_date: str, load_time: str):
         """
@@ -167,14 +194,17 @@ class ParquetExportResource(ConfigurableResource):
         """
         datestamp = str(load_date)
         timestamp = str(load_time)
+        
+        folder_path = self._get_export_folder_path()
+        file_name = self._get_parquet_file_name()
 
         if endpoint_key:
-            filename = f"{endpoint_key}_{self.parquet_file_name}"
+            filename = f"{endpoint_key}_{file_name}"
         else:
-            filename = self.parquet_file_name
+            filename = file_name
 
         export_path = os.path.join(
-            self.export_folder_path,
+            folder_path,
             f"{endpoint_key}/load_date={datestamp}/load_time={timestamp}/{filename}",
         )
         return export_path
@@ -182,18 +212,38 @@ class ParquetExportResource(ConfigurableResource):
 
 class AWSS3Resource(ConfigurableResource):
     """Resource for managing AWS S3 connections for Parquet file uploads.
+    Credentials must be provided via environment variables.
+    Bucket name and region can be provided directly or read from ConfigResource.
 
     Attributes:
-        bucket_name (str): Name of the S3 bucket.
-        access_key_id (str): AWS access key ID.
-        secret_access_key (str): AWS secret access key.
-        region_name (str): AWS region name.
+        config_resource (ConfigResource): Config resource for reading default values.
+        access_key_id (str): AWS access key ID (required, from env var).
+        secret_access_key (str): AWS secret access key (required, from env var).
+        bucket_name (Optional[str]): Name of the S3 bucket (from config if not provided).
+        region_name (Optional[str]): AWS region name (from config if not provided).
     """
 
-    bucket_name: str
+    config_resource: ConfigResource
     access_key_id: str
     secret_access_key: str
-    region_name: str
+    bucket_name: Optional[str] = None
+    region_name: Optional[str] = None
+
+    def _get_bucket_name(self) -> str:
+        """Get S3 bucket name from attribute or config."""
+        if self.bucket_name:
+            return self.bucket_name
+        return self.config_resource.get_config_value(
+            "aws", default={}, required=True
+        ).get("s3_bucket_name", "")
+
+    def _get_region_name(self) -> str:
+        """Get AWS region name from attribute or config."""
+        if self.region_name:
+            return self.region_name
+        return self.config_resource.get_config_value(
+            "aws", default={}, required=True
+        ).get("region_name", "us-east-1")
 
     def get_s3_client(self):
         """Get S3 client with lazy initialization and credential validation.
@@ -205,18 +255,20 @@ class AWSS3Resource(ConfigurableResource):
             ValueError: If S3 bucket does not exist or credentials are invalid.
         """
         if not hasattr(self, "_client"):
+            bucket = self._get_bucket_name()
+            region = self._get_region_name()
             try:
                 self._client = boto3.client(
                     "s3",
-                    region_name=self.region_name,
+                    region_name=region,
                     aws_access_key_id=self.access_key_id,
                     aws_secret_access_key=self.secret_access_key,
                 )
-                self._client.head_bucket(Bucket=self.bucket_name)
+                self._client.head_bucket(Bucket=bucket)
             except Exception as e:
                 error_msg = str(e)
                 if "NoSuchBucket" in error_msg:
-                    raise ValueError(f"S3 bucket '{self.bucket_name}' does not exist")
+                    raise ValueError(f"S3 bucket '{bucket}' does not exist")
                 else:
                     raise ValueError(f"Failed to connect to S3: {error_msg}")
         return self._client

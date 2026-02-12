@@ -75,7 +75,7 @@ def get_last_modified_from_s3(
 
     try:
         s3_client = aws_s3_config.get_s3_client()
-        bucket = aws_s3_config.bucket_name
+        bucket = aws_s3_config._get_bucket_name()
         prefix = f"bulletin_raw/{endpoint}/"
 
         context.log.info(
