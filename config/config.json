@@ -18,7 +18,7 @@
         "http2": true
     },
     "paths": {
-        "parquet_export_folder_path": "bulletin_raw/",
+        "parquet_export_folder_path": "/bulletin_raw/",
         "parquet_file_name": "de_bulletin_data.parquet",
         "parquet_compression": "SNAPPY"
     },

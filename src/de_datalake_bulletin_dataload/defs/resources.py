@@ -159,11 +159,6 @@ class ParquetExportResource(ConfigurableResource):
         """Normalize one path fragment (single segment)."""
         return str(value).strip().strip("/\\")
 
-    @staticmethod
-    def _normalize_path_prefix(value: str) -> str:
-        """Normalize a root/prefix path for S3 keys."""
-        return str(value).strip().strip("/\\")
-
     def _get_export_folder_path(self) -> str:
         """Get export folder path from attribute or config."""
         if self.export_folder_path:
@@ -194,10 +189,6 @@ class ParquetExportResource(ConfigurableResource):
             raise ValueError("'paths.parquet_compression' is missing or empty in config file")
         return compression
 
-    def get_compression(self) -> str:
-        """Public accessor for parquet compression setting."""
-        return self._get_compression()
-
     def _get_partition_date_prefix(self) -> str:
         """Get partition date prefix from config."""
         return self.config_resource.get_config_value("partition_date_prefix", required=True)
@@ -223,14 +214,6 @@ class ParquetExportResource(ConfigurableResource):
             f"{time_prefix}{timestamp}",
             filename,
         )
-
-    def get_export_root_prefix(self) -> str:
-        """
-        Return the normalized export root prefix (no leading/trailing slash).
-
-        This value is safe to use for both local paths and S3 object key prefixes.
-        """
-        return self._normalize_path_prefix(self._get_export_folder_path())
 
     def get_relative_export_path(
         self, endpoint_key: str, load_date: str, load_time: str
