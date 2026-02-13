@@ -101,12 +101,16 @@ def get_last_modified_from_s3(
     """
     default_baseline = get_config.get_config_value("default_baseline_datetime")
     partition_date_prefix = get_config.get_config_value("partition_date_prefix")
-    s3_folder_prefix = get_config.get_config_value("paths")["parquet_export_folder_path"]
+    s3_folder_prefix = (
+        get_config.get_config_value("paths")["parquet_export_folder_path"]
+        .strip()
+        .strip("/\\")
+    )
 
     try:
         s3_client = aws_s3_config.get_s3_client()
         bucket = aws_s3_config._get_bucket_name()
-        prefix = f"{s3_folder_prefix}{endpoint}/"
+        prefix = f"{s3_folder_prefix}/{endpoint}/"
 
         context.log.info(
             f"Querying S3 for most recent partition in s3://{bucket}/{prefix}"

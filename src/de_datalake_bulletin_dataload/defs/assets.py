@@ -218,7 +218,7 @@ async def fetch_export_pages_data(
     context.log.info(f"Validated {len(validated_data)} pages records")
 
     export_path = export_to_parquet(
-        export_path=parquet_export_path,
+        parquet_export_resource=parquet_export_path,
         validated_data=validated_data,
         endpoint_key=endpoint_key,
         load_date=load_date,
@@ -229,7 +229,13 @@ async def fetch_export_pages_data(
 
     if config.upload_to_s3:
         aws_s3_path = export_to_s3(
-            aws_s3_config=aws_s3_config, file_path=export_path, context=context
+            aws_s3_config=aws_s3_config,
+            parquet_export_resource=parquet_export_path,
+            file_path=export_path,
+            endpoint_key=endpoint_key,
+            load_date=load_date,
+            load_time=load_time,
+            context=context,
         )
         context.log.info(f"Uploaded pages data to S3: {aws_s3_path}")
 
@@ -303,7 +309,7 @@ async def fetch_export_media_data(
     context.log.info(f"Validated {len(validated_data)} media records")
 
     export_path = export_to_parquet(
-        export_path=parquet_export_path,
+        parquet_export_resource=parquet_export_path,
         validated_data=validated_data,
         endpoint_key=endpoint_key,
         load_date=load_date,
@@ -314,7 +320,13 @@ async def fetch_export_media_data(
 
     if config.upload_to_s3:
         aws_s3_path = export_to_s3(
-            aws_s3_config=aws_s3_config, file_path=export_path, context=context
+            aws_s3_config=aws_s3_config,
+            parquet_export_resource=parquet_export_path,
+            file_path=export_path,
+            endpoint_key=endpoint_key,
+            load_date=load_date,
+            load_time=load_time,
+            context=context,
         )
         context.log.info(f"Uploaded media data to S3: {aws_s3_path}")
 

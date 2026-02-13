@@ -44,7 +44,7 @@ class ConfigResource(ConfigurableResource):
         Raises:
             ValueError: If 'endpoints' field is missing or empty in config file.
         """
-        endpoints = self.get_config_value("endpoints", default={}, required=True)
+        endpoints = self.get_config_value("endpoints", required=True)
         endpoint_keys = endpoints.keys()
         if not endpoint_keys:
             raise ValueError("No endpoint keys found in config file")
@@ -97,7 +97,7 @@ class ConfigResource(ConfigurableResource):
             "timeout": httpx.Timeout(
                 http_config["total_timeout"], connect=http_config["connect_timeout"]
             ),
-            "http2": http_config.get("http2", False),
+            "http2": http_config["http2"],
         }
 
     def get_all_endpoint_urls(self) -> Dict[str, str]:
@@ -106,11 +106,9 @@ class ConfigResource(ConfigurableResource):
         Returns:
             Dict[str, str]: Mapping of endpoint keys to full URLs with pagination.
         """
-        endpoints = self.get_config_value("endpoints", default={}, required=True)
-        pagination_param = self.get_config_value(
-            "loop_pagination_param", default="", required=True
-        )
-        base_url = self.get_config_value("base_url", default="", required=True)
+        endpoints = self.get_config_value("endpoints", required=True)
+        pagination_param = self.get_config_value("loop_pagination_param", required=True)
+        base_url = self.get_config_value("base_url", required=True)
         return {
             key: f"{base_url}{path}{pagination_param}"
             for key, path in endpoints.items()
@@ -156,29 +154,101 @@ class ParquetExportResource(ConfigurableResource):
     parquet_file_name: Optional[str] = None
     compression: Optional[str] = None
 
+    @staticmethod
+    def _normalize_path_fragment(value: str) -> str:
+        """Normalize one path fragment (single segment)."""
+        return str(value).strip().strip("/\\")
+
+    @staticmethod
+    def _normalize_path_prefix(value: str) -> str:
+        """Normalize a root/prefix path for S3 keys."""
+        return str(value).strip().strip("/\\")
+
     def _get_export_folder_path(self) -> str:
         """Get export folder path from attribute or config."""
         if self.export_folder_path:
-            return self.export_folder_path
-        return self.config_resource.get_config_value(
-            "paths", default={}, required=True
-        ).get("parquet_export_folder_path", "/bulletin_raw/")
+            return str(self.export_folder_path).strip()
+        paths = self.config_resource.get_config_value("paths", required=True)
+        folder_path = paths.get("parquet_export_folder_path")
+        if not folder_path:
+            raise ValueError("'paths.parquet_export_folder_path' is missing or empty in config file")
+        return str(folder_path).strip()
 
     def _get_parquet_file_name(self) -> str:
         """Get parquet file name from attribute or config."""
         if self.parquet_file_name:
             return self.parquet_file_name
-        return self.config_resource.get_config_value(
-            "paths", default={}, required=True
-        ).get("parquet_file_name", "de_bulletin_data.parquet")
+        paths = self.config_resource.get_config_value("paths", required=True)
+        file_name = paths.get("parquet_file_name")
+        if not file_name:
+            raise ValueError("'paths.parquet_file_name' is missing or empty in config file")
+        return file_name
 
     def _get_compression(self) -> str:
         """Get compression type from attribute or config."""
         if self.compression:
             return self.compression
-        return self.config_resource.get_config_value(
-            "paths", default={}, required=True
-        ).get("parquet_compression", "SNAPPY")
+        paths = self.config_resource.get_config_value("paths", required=True)
+        compression = paths.get("parquet_compression")
+        if not compression:
+            raise ValueError("'paths.parquet_compression' is missing or empty in config file")
+        return compression
+
+    def get_compression(self) -> str:
+        """Public accessor for parquet compression setting."""
+        return self._get_compression()
+
+    def _get_partition_date_prefix(self) -> str:
+        """Get partition date prefix from config."""
+        return self.config_resource.get_config_value("partition_date_prefix", required=True)
+
+    def _get_partition_time_prefix(self) -> str:
+        """Get partition time prefix from config."""
+        return self.config_resource.get_config_value("partition_time_prefix", required=True)
+
+    def _build_partitioned_filename_path(
+        self, endpoint_key: str, load_date: str, load_time: str
+    ) -> str:
+        """Build endpoint/date/time/file suffix used by both local and S3 paths."""
+        endpoint = self._normalize_path_fragment(endpoint_key)
+        datestamp = str(load_date).strip()
+        timestamp = str(load_time).strip()
+        file_name = self._get_parquet_file_name()
+        date_prefix = self._get_partition_date_prefix()
+        time_prefix = self._get_partition_time_prefix()
+        filename = f"{endpoint}_{file_name}" if endpoint else file_name
+        return os.path.join(
+            endpoint,
+            f"{date_prefix}{datestamp}",
+            f"{time_prefix}{timestamp}",
+            filename,
+        )
+
+    def get_export_root_prefix(self) -> str:
+        """
+        Return the normalized export root prefix (no leading/trailing slash).
+
+        This value is safe to use for both local paths and S3 object key prefixes.
+        """
+        return self._normalize_path_prefix(self._get_export_folder_path())
+
+    def get_relative_export_path(
+        self, endpoint_key: str, load_date: str, load_time: str
+    ) -> str:
+        """
+        Generate a normalized relative export path (without local filesystem root).
+
+        Format:
+        {export_root}/{endpoint}/{partition_date_prefix}{YYYY-MM-DD}/{partition_time_prefix}{HH:MM:SS}/{endpoint}_{file_name}
+        """
+        folder_path = self.get_export_root_prefix()
+
+        return os.path.join(
+            folder_path,
+            self._build_partitioned_filename_path(
+                endpoint_key=endpoint_key, load_date=load_date, load_time=load_time
+            ),
+        )
 
     def get_export_path(self, endpoint_key: str, load_date: str, load_time: str):
         """
@@ -192,22 +262,13 @@ class ParquetExportResource(ConfigurableResource):
         Returns:
             str: Full export path for Parquet file.
         """
-        datestamp = str(load_date)
-        timestamp = str(load_time)
-        
         folder_path = self._get_export_folder_path()
-        file_name = self._get_parquet_file_name()
-
-        if endpoint_key:
-            filename = f"{endpoint_key}_{file_name}"
-        else:
-            filename = file_name
-
-        export_path = os.path.join(
+        return os.path.join(
             folder_path,
-            f"{endpoint_key}/load_date={datestamp}/load_time={timestamp}/{filename}",
+            self._build_partitioned_filename_path(
+                endpoint_key=endpoint_key, load_date=load_date, load_time=load_time
+            ),
         )
-        return export_path
 
 
 class AWSS3Resource(ConfigurableResource):
@@ -233,17 +294,21 @@ class AWSS3Resource(ConfigurableResource):
         """Get S3 bucket name from attribute or config."""
         if self.bucket_name:
             return self.bucket_name
-        return self.config_resource.get_config_value(
-            "aws", default={}, required=True
-        ).get("s3_bucket_name", "")
+        aws_config = self.config_resource.get_config_value("aws", required=True)
+        bucket_name = aws_config.get("s3_bucket_name")
+        if not bucket_name:
+            raise ValueError("'aws.s3_bucket_name' is missing or empty in config file")
+        return bucket_name
 
     def _get_region_name(self) -> str:
         """Get AWS region name from attribute or config."""
         if self.region_name:
             return self.region_name
-        return self.config_resource.get_config_value(
-            "aws", default={}, required=True
-        ).get("region_name", "us-east-1")
+        aws_config = self.config_resource.get_config_value("aws", required=True)
+        region_name = aws_config.get("region_name")
+        if not region_name:
+            raise ValueError("'aws.region_name' is missing or empty in config file")
+        return region_name
 
     def get_s3_client(self):
         """Get S3 client with lazy initialization and credential validation.
