@@ -39,7 +39,7 @@ def export_to_parquet(
     export_file_path = parquet_export_resource.get_export_path(
         endpoint_key=endpoint_key, load_date=load_date, load_time=load_time
     )
-    compression = parquet_export_resource._get_compression()
+    compression = parquet_export_resource._get_compression().lower()
     runtime_timestamp = datetime.now()
 
     os.makedirs(os.path.dirname(export_file_path), exist_ok=True)
