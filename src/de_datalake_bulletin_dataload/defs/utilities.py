@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import Optional, Annotated
 from pydantic import Field
 from dagster import AssetExecutionContext, Config
@@ -49,6 +50,34 @@ class RuntimeConfig(Config):
         ),
     ] = False
 
+def normalize_filter_datetime(value: str, source: str) -> str:
+    """
+    Normalize and validate a filter datetime value using ISO 8601 parsing.
+    
+    Args:
+        value (str): The datetime string to normalize.
+        source (str): Description of the source for error messages.
+
+    Returns:
+        str: Normalized datetime string in ISO 8601 format.
+    
+    Raises:
+        ValueError: If the datetime string is not in a valid ISO 8601 format.
+    """
+    normalized = value.strip()
+    if "T" not in normalized:
+        normalized = f"{normalized}T00:00:00"
+
+    # Support UTC designator while keeping strict ISO validation.
+    parsable = normalized.replace("Z", "+00:00")
+    try:
+        datetime.fromisoformat(parsable)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid datetime value from {source}: '{value}'. Expected ISO 8601 format."
+        ) from exc
+
+    return normalized
 
 def get_last_modified_from_s3(
     endpoint: str,
@@ -72,11 +101,12 @@ def get_last_modified_from_s3(
     """
     default_baseline = get_config.get_config_value("default_baseline_datetime")
     partition_date_prefix = get_config.get_config_value("partition_date_prefix")
+    s3_folder_prefix = get_config.get_config_value("paths")["parquet_export_folder_path"]
 
     try:
         s3_client = aws_s3_config.get_s3_client()
         bucket = aws_s3_config._get_bucket_name()
-        prefix = f"bulletin_raw/{endpoint}/"
+        prefix = f"{s3_folder_prefix}{endpoint}/"
 
         context.log.info(
             f"Querying S3 for most recent partition in s3://{bucket}/{prefix}"
@@ -145,23 +175,18 @@ def determine_filter_date(
         return None
 
     if config.last_modified_date:
-        # Transform YYYY-MM-DD to ISO 8601 datetime format (YYYY-MM-DDTHH:MM:SS)
-        date_str = config.last_modified_date
-        if "T" not in date_str:  # If not already ISO 8601 format
-            date_str = f"{date_str}T00:00:00"
+        date_str = normalize_filter_datetime(config.last_modified_date, "last_modified_date")
         context.log.info(
             f"Incremental load: Using provided date {date_str} for {endpoint_key}"
         )
         return date_str
 
-    # Auto-discover from S3 partitions
     filter_date = get_last_modified_from_s3(
         endpoint_key, aws_s3_config, get_config, context
     )
     
-    # Transform S3-discovered date to ISO 8601 format if needed
     if filter_date:
-        filter_date = f"{filter_date}T00:00:00"
+        filter_date = normalize_filter_datetime(filter_date, "s3_discovered_date")
     
     context.log.info(
         f"Incremental load: Auto-discovered baseline from S3 for {endpoint_key}: {filter_date}"
